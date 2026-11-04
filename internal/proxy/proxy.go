@@ -143,12 +143,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Scheme != "http" {
-		http.Error(w, "use CONNECT for HTTPS", 400)
+		http.Error(w, "use CONNECT for HTTPS", http.StatusBadRequest)
 		return
 	}
 	resp, e := s.forward(r, "http", r.URL.Host)
 	if e != nil {
-		http.Error(w, e.Error(), 502)
+		http.Error(w, e.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -161,14 +161,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	host, _, e := net.SplitHostPort(r.Host)
 	if e != nil {
-		http.Error(w, "CONNECT requires host:port", 400)
+		http.Error(w, "CONNECT requires host:port", http.StatusBadRequest)
+		return
+	}
+	// Browsers send internationalized names as punycode. Reject raw non-ASCII
+	// hosts so Unicode case folding can never make them look trusted.
+	if !config.IsASCII(r.Host) || config.Host(host) == "" {
+		http.Error(w, "CONNECT host must be ASCII (use punycode)", http.StatusBadRequest)
 		return
 	}
 	var upstream net.Conn
 	if s.current.Load().Target(host) == nil {
 		upstream, e = s.dial(r.Context(), "tcp", r.Host)
 		if e != nil {
-			http.Error(w, e.Error(), 502)
+			http.Error(w, e.Error(), http.StatusBadGateway)
 			return
 		}
 	}
@@ -177,7 +183,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		if upstream != nil {
 			upstream.Close()
 		}
-		http.Error(w, "hijacking unavailable", 500)
+		http.Error(w, "hijacking unavailable", http.StatusInternalServerError)
 		return
 	}
 	conn, rw, e := hj.Hijack()
@@ -242,7 +248,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = conn.SetReadDeadline(time.Time{})
 		// Pin every inner request to the CONNECT authority, preventing cross-host credential leakage.
-		if !strings.EqualFold(req.Host, r.Host) && !strings.EqualFold(req.Host, host) {
+		if !config.IsASCII(req.Host) || (!strings.EqualFold(req.Host, r.Host) && !strings.EqualFold(req.Host, host)) {
 			req.Body.Close()
 			return
 		}

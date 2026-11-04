@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"github.com/gluttony-club/AuthPass/internal/ca"
@@ -213,6 +214,41 @@ func TestHTTPOptIn(t *testing.T) {
 					t.Fatalf("allow=%v host=%s: %d %q want %q", allow, host, w.Code, w.Body.String(), want)
 				}
 			}
+		}
+	}
+}
+
+func TestNonASCIIHostsGetNoCredentials(t *testing.T) {
+	c := &config.Config{Listen: "127.0.0.1:18080", TrustedDomains: []string{"internal.test"}, Rules: []config.Rule{{HostPrefix: "dev.", Username: "user", Password: "secret", Enabled: true, AllowHTTP: true}}}
+	p, err := New(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, host := range []string{"dev.İnternal.test:443", "dev.internal.tes\u212A:443", "[dev.İnternal.test]:443"} {
+		req := httptest.NewRequest(http.MethodConnect, "http://127.0.0.1:18080/", nil)
+		req.Host = host
+		req.URL = &url.URL{Host: host}
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("CONNECT %q: got %d, want 400", host, w.Code)
+		}
+	}
+	// Plain HTTP: the request may be forwarded, but never with credentials.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "auth="+r.Header.Get("Authorization")) }))
+	defer upstream.Close()
+	p.transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+	}
+	for host, want := range map[string]string{"dev.internal.test": "auth=Basic dXNlcjpzZWNyZXQ=", "dev.İnternal.test": "auth=", "dev.internal.tes\u212A": "auth="} {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+		req.URL.Host = host
+		req.Host = host
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, req)
+		if w.Body.String() != want {
+			t.Errorf("GET http://%s: %d %q, want %q", host, w.Code, w.Body.String(), want)
 		}
 	}
 }

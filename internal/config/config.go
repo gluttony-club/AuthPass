@@ -94,7 +94,11 @@ func Validate(rules []Rule) error {
 			return fmt.Errorf("invalid or duplicate rule id")
 		}
 		ids[r.ID] = true
-		r.HostPrefix = strings.ToLower(strings.TrimSpace(r.HostPrefix))
+		r.HostPrefix = strings.TrimSpace(r.HostPrefix)
+		if !IsASCII(r.HostPrefix) {
+			return fmt.Errorf("host_prefix must contain only [a-z0-9.-] and be non-empty")
+		}
+		r.HostPrefix = strings.ToLower(r.HostPrefix)
 		if !prefixRE.MatchString(r.HostPrefix) {
 			return fmt.Errorf("host_prefix must contain only [a-z0-9.-] and be non-empty")
 		}
@@ -126,20 +130,50 @@ func WriteFile(path string, b []byte) error {
 	}
 	return os.Rename(f.Name(), path)
 }
+
+// IsASCII reports whether s contains only ASCII bytes. Non-ASCII host names
+// are never matched: Unicode case folding (for example "İ" -> "i") could make
+// a host look trusted while the transport connects to a different, punycode
+// encoded host.
+func IsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// Host returns the lowercased host name without port, brackets or trailing
+// dot. It returns "" for non-ASCII input so that such hosts never match a rule
+// or trusted domain.
 func Host(s string) string {
+	if !IsASCII(s) {
+		return ""
+	}
 	if h, _, e := net.SplitHostPort(s); e == nil {
 		s = h
 	}
 	return strings.ToLower(strings.TrimSuffix(strings.Trim(s, "[]"), "."))
 }
-func Match(prefix, host string) bool { return prefix != "" && strings.HasPrefix(Host(host), prefix) }
+func Match(prefix, host string) bool {
+	h := Host(host)
+	return prefix != "" && h != "" && strings.HasPrefix(h, prefix)
+}
 func NormalizeDomains(domains []string) ([]string, error) {
 	normalized := make([]string, 0, len(domains))
 	seen := map[string]bool{}
 	for _, domain := range domains {
-		d := strings.ToLower(strings.TrimSpace(domain))
+		d := strings.TrimSpace(domain)
 		if d == "" {
 			continue
+		}
+		if !IsASCII(d) {
+			return nil, fmt.Errorf("invalid trusted domain %q: only ASCII letters, digits, dots and hyphens are allowed; enter internationalized domains in punycode (xn--...)", domain)
+		}
+		d = strings.ToLower(d)
+		if net.ParseIP(d) != nil || allDigits(d[strings.LastIndex(d, ".")+1:]) {
+			return nil, fmt.Errorf("invalid trusted domain %q: IP addresses and names ending in a numeric label are not allowed; use a domain such as example.com", domain)
 		}
 		if !prefixRE.MatchString(d) || !strings.Contains(d, ".") || strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".") || strings.Contains(d, "..") {
 			return nil, fmt.Errorf("invalid trusted domain %q: use a domain such as example.com, without wildcards or leading/trailing dots", domain)
@@ -152,8 +186,23 @@ func NormalizeDomains(domains []string) ([]string, error) {
 	return normalized, nil
 }
 
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Config) Trusted(host string) bool {
 	host = Host(host)
+	if host == "" {
+		return false
+	}
 	for _, d := range c.TrustedDomains {
 		if host == d || strings.HasSuffix(host, "."+d) {
 			return true

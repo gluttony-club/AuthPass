@@ -132,3 +132,41 @@ func TestNormalizeDomains(t *testing.T) {
 		}
 	}
 }
+
+func TestNonASCIIHostsNeverMatch(t *testing.T) {
+	c := &Config{TrustedDomains: []string{"internal.test"}, Rules: []Rule{{HostPrefix: "dev.", Username: "user", Password: "secret", Enabled: true}}}
+	if c.Target("dev.internal.test") == nil {
+		t.Fatal("ASCII host did not match")
+	}
+	// strings.ToLower("İ") == "i̇" and strings.ToLower("K" Kelvin sign) == "k": such
+	// hosts must not be treated as the ASCII names they fold to.
+	for _, host := range []string{"dev.İnternal.test", "dev.\u0130nternal.test:443", "dev.internal.tes\u212A", "\u212Aey.internal.test", "dev.internal.test\u3002", "[dev.İnternal.test]:443", "dev.ınternal.test"} {
+		if c.Target(host) != nil || c.Trusted(host) || Match("dev.", host) || Host(host) != "" {
+			t.Errorf("non-ASCII host %q matched", host)
+		}
+	}
+	for _, domain := range []string{"\u212Aexample.com", "exämple.com", "example.co\u0130"} {
+		if _, err := NormalizeDomains([]string{domain}); err == nil {
+			t.Errorf("accepted non-ASCII domain %q", domain)
+		}
+	}
+	if err := Validate([]Rule{{HostPrefix: "\u212Aey."}}); err == nil {
+		t.Fatal("accepted non-ASCII host_prefix")
+	}
+}
+
+func TestNormalizeDomainsRejectsIPs(t *testing.T) {
+	for _, domain := range []string{"127.0.0.1", "10.0.0.1", "0.1", "example.123", "192.168.1", "::1", "[::1]", "fe80::1"} {
+		_, err := NormalizeDomains([]string{domain})
+		if err == nil {
+			t.Errorf("accepted %s", domain)
+		} else if strings.Contains(domain, ".") && !strings.Contains(err.Error(), "IP addresses") {
+			t.Errorf("unclear error for %s: %v", domain, err)
+		}
+	}
+	for _, domain := range []string{"example.com", "1password.example", "a1.b2", "123.example.org"} {
+		if _, err := NormalizeDomains([]string{domain}); err != nil {
+			t.Errorf("rejected %s: %v", domain, err)
+		}
+	}
+}

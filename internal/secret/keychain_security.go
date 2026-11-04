@@ -21,24 +21,24 @@ func (keychain) Set(id, password string) error {
 	}
 	script, err := securitySetScript(id, password)
 	if err != nil {
-		return fmt.Errorf("Keychain operation failed: %w", err)
+		return fmt.Errorf("keychain operation failed: %w", err)
 	}
 	cmd := exec.Command("/usr/bin/security", "-i")
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("Keychain operation failed: %w", err)
+		return fmt.Errorf("keychain operation failed: %w", err)
 	}
 	if strings.TrimSpace(stderr.String()) != "" {
-		return fmt.Errorf("Keychain operation failed: security command failed")
+		return fmt.Errorf("keychain operation failed: security command failed")
 	}
 	return nil
 }
 
 func securityRun(operation, id string) (string, error) {
 	if !securityAccountID.MatchString(id) {
-		return "", fmt.Errorf("Keychain operation failed: invalid account ID")
+		return "", fmt.Errorf("keychain operation failed: invalid account ID")
 	}
 	args := []string{operation, "-s", service, "-a", id}
 	if operation == "find-generic-password" {
@@ -49,7 +49,7 @@ func securityRun(operation, id string) (string, error) {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 44 {
 			return "", nil
 		}
-		return "", fmt.Errorf("Keychain operation failed: %w", err)
+		return "", fmt.Errorf("keychain operation failed: %w", err)
 	}
 	return strings.TrimSuffix(string(b), "\n"), nil
 }

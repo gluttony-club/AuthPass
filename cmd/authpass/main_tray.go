@@ -35,6 +35,10 @@ func ready() {
 	systray.SetTooltip("AuthPass")
 	status := systray.AddMenuItem("已停用", "")
 	status.Disable()
+	// Shows keychain read problems; hidden when every password was read.
+	secretWarn := systray.AddMenuItem("", "")
+	secretWarn.Disable()
+	secretWarn.Hide()
 	toggle := systray.AddMenuItem("启用", "")
 	open := systray.AddMenuItem("打开配置目录", "")
 	login := systray.AddMenuItemCheckbox("开机自动启动", "", true)
@@ -96,6 +100,22 @@ func ready() {
 			if e != nil {
 				return e
 			}
+			showSecretStatus := func(st string) {
+				if st == "" {
+					secretWarn.Hide()
+					return
+				}
+				log.Print(st)
+				title := []rune("⚠️ " + st)
+				if len(title) > 80 {
+					title = append(title[:79], '…')
+				}
+				secretWarn.SetTitle(string(title))
+				secretWarn.SetTooltip(st + "。可在设置页重新输入密码，或退出后重新打开 AuthPass 并在钥匙串提示中点击「始终允许」。")
+				secretWarn.Show()
+			}
+			showSecretStatus(nm.SecretStatus())
+			nm.SecretsChanged = showSecretStatus
 			nm.PreferencesChanged = func(v bool) {
 				if v {
 					login.Check()
@@ -169,9 +189,9 @@ func ready() {
 				systray.Quit()
 				return
 			}
-			log.Print(e)
-			systray.Quit()
-			os.Exit(1)
+			// Keep the menu alive so the error is visible and the user can open the
+			// configuration directory, fix it, and choose 启用 to retry.
+			report(e)
 		} else {
 			report(sysproxy.Restore(dir))
 			status.SetTitle("已停用 / " + c.Listen)

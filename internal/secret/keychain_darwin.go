@@ -3,6 +3,7 @@
 package secret
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 
@@ -12,6 +13,18 @@ import (
 type keychain struct{}
 
 func New(dir string) Store { return keychain{} }
+
+// errSecInvalidOwnerEdit is returned when the item's access control belongs to
+// a different code signature (for example an older, ad-hoc signed build).
+const errSecInvalidOwnerEdit kc.Error = -25244
+
+// recoverable reports whether err means the item belongs to another build and
+// may be replaced. Any other error, including the user cancelling or denying
+// the keychain prompt, must leave the existing item untouched.
+func recoverable(err error) bool {
+	var code kc.Error
+	return errors.As(err, &code) && (code == errSecInvalidOwnerEdit || code == kc.ErrorAuthFailed)
+}
 
 func keychainQuery(id string) kc.Item {
 	item := kc.NewItem()
@@ -31,16 +44,16 @@ func (keychain) Set(id, password string) error {
 		update := kc.NewItem()
 		update.SetData([]byte(password))
 		err = kc.UpdateItem(keychainQuery(id), update)
-		if err != nil {
+		if recoverable(err) {
 			// Item owned by another build (e.g. older version or re-signed app):
 			// remove it and add a fresh one owned by this app.
-			if forceDelete(id) == nil {
+			if err = forceDelete(id); err == nil {
 				err = kc.AddItem(item)
 			}
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("Keychain operation failed: %w", err)
+		return fmt.Errorf("keychain operation failed: %w", err)
 	}
 	return nil
 }
@@ -54,7 +67,7 @@ func (keychain) Get(id string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("Keychain operation failed: %w", err)
+		return "", fmt.Errorf("keychain operation failed: %w", err)
 	}
 	if len(results) == 0 {
 		return "", nil
@@ -67,11 +80,11 @@ func (keychain) Delete(id string) error {
 	if err == kc.ErrorItemNotFound {
 		return nil
 	}
-	if err != nil {
+	if recoverable(err) {
 		err = forceDelete(id)
 	}
 	if err != nil {
-		return fmt.Errorf("Keychain operation failed: %w", err)
+		return fmt.Errorf("keychain operation failed: %w", err)
 	}
 	return nil
 }
@@ -87,7 +100,7 @@ func forceDelete(id string) error {
 		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 44 {
 			return nil // not found
 		}
-		return fmt.Errorf("Keychain delete failed: %v: %s", err, out)
+		return fmt.Errorf("keychain delete failed: %v: %s", err, out)
 	}
 	return nil
 }

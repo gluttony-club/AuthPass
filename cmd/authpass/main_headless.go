@@ -68,6 +68,14 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
+	if st := m.SecretStatus(); st != "" {
+		log.Print(st)
+	}
+	m.SecretsChanged = func(st string) {
+		if st != "" {
+			log.Print(st)
+		}
+	}
 	if err := initializeLaunchAtLogin(m); err != nil {
 		log.Print(err)
 	}

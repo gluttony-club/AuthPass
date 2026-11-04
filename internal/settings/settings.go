@@ -4,12 +4,14 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gluttony-club/AuthPass/internal/config"
 	"github.com/gluttony-club/AuthPass/internal/secret"
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 )
 
@@ -28,21 +30,71 @@ type Manager struct {
 	Changed            func() error
 	SetLaunchAtLogin   func(bool) error
 	PreferencesChanged func(bool)
-	launchError        string
+	// SecretsChanged is called with the new SecretStatus after rules are saved.
+	SecretsChanged func(string)
+	launchError    string
+	// secretErrors holds rule IDs whose stored password could not be read
+	// (for example the user denied keychain access). Those rules run without a
+	// password, and their stored item is left untouched until the user sets or
+	// clears the password.
+	secretErrors map[string]string
 }
 
 func New(c *config.Config, path string, store secret.Store, token string) (*Manager, error) {
 	if token == "" {
 		token = config.RandomID()
 	}
+	m := &Manager{c: c, path: path, store: store, Token: token, secretErrors: map[string]string{}}
 	for i := range c.Rules {
 		p, e := store.Get(c.Rules[i].ID)
 		if e != nil {
-			return nil, e
+			// Never exit on a read failure: keep running with no password for this rule.
+			m.secretErrors[c.Rules[i].ID] = e.Error()
+			p = ""
 		}
 		c.Rules[i].Password = p
 	}
-	return &Manager{c: c, path: path, store: store, Token: token}, nil
+	return m, nil
+}
+
+// SecretStatus describes passwords that could not be read, or "" if all were read.
+func (m *Manager) SecretStatus() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.secretStatus()
+}
+func (m *Manager) secretStatus() string {
+	if len(m.secretErrors) == 0 {
+		return ""
+	}
+	var names, details []string
+	for _, r := range m.c.Rules {
+		if e, ok := m.secretErrors[r.ID]; ok {
+			name := r.Name
+			if name == "" {
+				name = r.HostPrefix
+			}
+			names = append(names, name)
+			details = append(details, e)
+		}
+	}
+	sort.Strings(details)
+	return fmt.Sprintf("无法读取 %d 条规则的密码（%s），这些规则暂按无密码处理：%s", len(names), joinUnique(names), joinUnique(details))
+}
+func joinUnique(v []string) string {
+	seen := map[string]bool{}
+	out := ""
+	for _, s := range v {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		if out != "" {
+			out += "；"
+		}
+		out += s
+	}
+	return out
 }
 
 func (m *Manager) LaunchAtLogin() bool { m.mu.Lock(); defer m.mu.Unlock(); return m.c.LaunchAtLogin() }
@@ -63,7 +115,9 @@ func (m *Manager) updateLaunchAtLogin(v bool) error {
 	next.LaunchAtLoginValue = &v
 	if err := config.Save(m.path, &next); err != nil {
 		if m.SetLaunchAtLogin != nil {
-			_ = m.SetLaunchAtLogin(old)
+			if rerr := m.SetLaunchAtLogin(old); rerr != nil {
+				err = fmt.Errorf("%w; rollback of launch at login failed: %v", err, rerr)
+			}
 		}
 		m.launchError = err.Error()
 		return err
@@ -84,11 +138,11 @@ func (m *Manager) URL() string {
 func (m *Manager) authorize(w http.ResponseWriter, r *http.Request) bool {
 	_, port, _ := net.SplitHostPort(m.c.Listen)
 	if r.Host != "127.0.0.1:"+port && r.Host != "localhost:"+port {
-		http.Error(w, "invalid Host", 403)
+		http.Error(w, "invalid Host", http.StatusForbidden)
 		return false
 	}
 	if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
-		http.Error(w, "invalid Origin", 403)
+		http.Error(w, "invalid Origin", http.StatusForbidden)
 		return false
 	}
 	token := r.Header.Get("X-Auth-Token")
@@ -96,7 +150,7 @@ func (m *Manager) authorize(w http.ResponseWriter, r *http.Request) bool {
 		token = r.URL.Query().Get("token")
 	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(m.Token)) != 1 {
-		http.Error(w, "unauthorized", 401)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
 	return true
@@ -124,7 +178,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if r.URL.Path == "/api/status" && r.Method == "GET" {
-		json.NewEncoder(w).Encode(map[string]any{"proxy_addr": m.c.Listen, "ca_path": m.CAPath, "system_proxy_enabled": m.enabled})
+		json.NewEncoder(w).Encode(map[string]any{"proxy_addr": m.c.Listen, "ca_path": m.CAPath, "system_proxy_enabled": m.enabled, "secret_error": m.secretStatus()})
 		return
 	}
 	if r.URL.Path == "/api/preferences" {
@@ -138,17 +192,17 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&input); err != nil || input.Launch == nil || dec.Decode(new(any)) != io.EOF {
-				http.Error(w, "invalid preferences", 400)
+				http.Error(w, "invalid preferences", http.StatusBadRequest)
 				return
 			}
 			if err := m.updateLaunchAtLogin(*input.Launch); err != nil {
-				http.Error(w, err.Error(), 500)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			w.Write([]byte(`{"saved":true}`))
 		default:
 			w.Header().Set("Allow", "GET, PUT")
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
 	}
@@ -167,18 +221,18 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&input); err != nil || input.Domains == nil || dec.Decode(new(any)) != io.EOF {
-				http.Error(w, "invalid trusted_domains", 400)
+				http.Error(w, "invalid trusted_domains", http.StatusBadRequest)
 				return
 			}
 			domains, err := config.NormalizeDomains(*input.Domains)
 			if err != nil {
-				http.Error(w, err.Error(), 400)
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			next := *m.c
 			next.TrustedDomains = domains
 			if err := config.Save(m.path, &next); err != nil {
-				http.Error(w, "config save failed", 500)
+				http.Error(w, "config save failed", http.StatusInternalServerError)
 				return
 			}
 			m.c = &next
@@ -187,14 +241,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if m.Changed != nil {
 				if err := m.Changed(); err != nil {
-					http.Error(w, "saved; PAC refresh failed", 500)
+					http.Error(w, "saved; PAC refresh failed", http.StatusInternalServerError)
 					return
 				}
 			}
 			w.Write([]byte(`{"saved":true}`))
 		default:
 			w.Header().Set("Allow", "GET, PUT")
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
 	}
@@ -206,11 +260,12 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET":
 		type view struct {
 			config.Rule
-			HasPassword bool `json:"has_password"`
+			HasPassword   bool   `json:"has_password"`
+			PasswordError string `json:"password_error,omitempty"`
 		}
 		rows := make([]view, 0, len(m.c.Rules))
 		for _, v := range m.c.Rules {
-			rows = append(rows, view{v, v.Password != ""})
+			rows = append(rows, view{v, v.Password != "", m.secretErrors[v.ID]})
 		}
 		json.NewEncoder(w).Encode(rows)
 	case "PUT":
@@ -218,52 +273,78 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		dec.DisallowUnknownFields()
 		if e := dec.Decode(&rows); e != nil {
-			http.Error(w, "invalid rules", 400)
+			http.Error(w, "invalid rules", http.StatusBadRequest)
 			return
 		}
 		if dec.Decode(new(any)) != io.EOF {
-			http.Error(w, "invalid trailing JSON", 400)
+			http.Error(w, "invalid trailing JSON", http.StatusBadRequest)
 			return
 		}
 		next := *m.c
 		next.Rules = make([]config.Rule, len(rows))
+		// old holds the stored passwords we know. Unreadable ones are not in it,
+		// so a rollback never overwrites them with an empty value.
 		old := map[string]string{}
+		existing := map[string]bool{}
 		for _, r := range m.c.Rules {
-			old[r.ID] = r.Password
+			existing[r.ID] = true
+			if _, bad := m.secretErrors[r.ID]; !bad {
+				old[r.ID] = r.Password
+			}
 		}
+		// untouched lists unreadable rules whose password the user did not change;
+		// their stored item is left as is.
+		untouched := map[string]bool{}
 		for i, row := range rows {
 			v := row.Rule
 			v.Password = old[v.ID]
 			if row.ClearPassword {
 				if row.Password != nil && *row.Password != "" {
-					http.Error(w, "clear conflicts with password", 400)
+					http.Error(w, "clear conflicts with password", http.StatusBadRequest)
 					return
 				}
 				v.Password = ""
 			} else if row.Password != nil && *row.Password != "" {
 				v.Password = *row.Password
+			} else if _, bad := m.secretErrors[v.ID]; bad {
+				untouched[v.ID] = true
 			}
 			next.Rules[i] = v
 		}
 		if e := config.Validate(next.Rules); e != nil {
-			http.Error(w, e.Error(), 400)
+			http.Error(w, e.Error(), http.StatusBadRequest)
 			return
 		}
 		// Roll back completed secret operations if persistence fails. Publish only after all writes succeed.
-		restore := func() {
+		restore := func() error {
+			var errs []error
 			for id, p := range old {
-				_ = m.store.Set(id, p)
-			}
-			for _, r := range next.Rules {
-				if _, ok := old[r.ID]; !ok {
-					_ = m.store.Delete(r.ID)
+				if e := m.store.Set(id, p); e != nil {
+					errs = append(errs, e)
 				}
 			}
+			for _, r := range next.Rules {
+				if !existing[r.ID] {
+					if e := m.store.Delete(r.ID); e != nil {
+						errs = append(errs, e)
+					}
+				}
+			}
+			return errors.Join(errs...)
+		}
+		fail := func(msg string, e error) {
+			msg += ": " + e.Error()
+			if re := restore(); re != nil {
+				msg += "; rollback failed, stored passwords may be inconsistent: " + re.Error()
+			}
+			http.Error(w, msg, http.StatusInternalServerError)
 		}
 		for _, r := range next.Rules {
+			if untouched[r.ID] {
+				continue
+			}
 			if e := m.store.Set(r.ID, r.Password); e != nil {
-				restore()
-				http.Error(w, "secret save failed", 500)
+				fail("secret save failed", e)
 				return
 			}
 		}
@@ -271,33 +352,39 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, r := range next.Rules {
 			keep[r.ID] = true
 		}
-		for id := range old {
+		for id := range existing {
 			if !keep[id] {
 				if e := m.store.Delete(id); e != nil {
-					restore()
-					http.Error(w, "secret delete failed", 500)
+					fail("secret delete failed", e)
 					return
 				}
 			}
 		}
 		if e := config.Save(m.path, &next); e != nil {
-			restore()
-			http.Error(w, "config save failed", 500)
+			fail("config save failed", e)
 			return
 		}
 		m.c = &next
+		for id := range m.secretErrors {
+			if !untouched[id] {
+				delete(m.secretErrors, id)
+			}
+		}
+		if m.SecretsChanged != nil {
+			m.SecretsChanged(m.secretStatus())
+		}
 		if m.Publish != nil {
 			m.Publish(&next)
 		}
 		if m.Changed != nil {
 			if e := m.Changed(); e != nil {
-				http.Error(w, "saved; PAC refresh failed", 500)
+				http.Error(w, "saved; PAC refresh failed", http.StatusInternalServerError)
 				return
 			}
 		}
 		w.Write([]byte(`{"saved":true}`))
 	default:
 		w.Header().Set("Allow", "GET, PUT")
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }

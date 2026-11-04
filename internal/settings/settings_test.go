@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"errors"
 	"fmt"
 	"github.com/gluttony-club/AuthPass/internal/config"
 	"github.com/gluttony-club/AuthPass/internal/secret"
@@ -201,5 +202,144 @@ func TestDomains(t *testing.T) {
 	}
 	if w := call("PUT", `{"trusted_domains":[]}`, "token", "localhost:18080", ""); w.Code != 200 || len(m.c.TrustedDomains) != 0 {
 		t.Fatal(w)
+	}
+}
+
+// flakyStore wraps the file store and fails selected operations.
+type flakyStore struct {
+	secret.Store
+	getErr      map[string]error
+	setErr      map[string]error
+	setCalls    []string
+	rollbackErr error
+}
+
+func (s *flakyStore) Get(id string) (string, error) {
+	if e := s.getErr[id]; e != nil {
+		return "", e
+	}
+	return s.Store.Get(id)
+}
+func (s *flakyStore) Set(id, p string) error {
+	s.setCalls = append(s.setCalls, id)
+	if e := s.setErr[id]; e != nil {
+		return e
+	}
+	if s.rollbackErr != nil && len(s.setCalls) > 1 {
+		return s.rollbackErr
+	}
+	return s.Store.Set(id, p)
+}
+
+func TestUnreadablePasswordKeepsRunning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	files := secret.NewFile(dir)
+	if e := files.Set("a", "secret-a"); e != nil {
+		t.Fatal(e)
+	}
+	if e := files.Set("b", "secret-b"); e != nil {
+		t.Fatal(e)
+	}
+	c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{
+		{ID: "a", Name: "A", HostPrefix: "a.", Username: "u", Enabled: true},
+		{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true},
+	}}
+	store := &flakyStore{Store: files, getErr: map[string]error{"b": errors.New("keychain operation failed: user denied")}}
+	m, e := New(c, path, store, "test-token")
+	if e != nil {
+		t.Fatal("New must not fail on unreadable passwords:", e)
+	}
+	if c.Rules[0].Password != "secret-a" || c.Rules[1].Password != "" {
+		t.Fatal(c.Rules)
+	}
+	if st := m.SecretStatus(); !strings.Contains(st, "1 条") || !strings.Contains(st, "B") || !strings.Contains(st, "user denied") {
+		t.Fatal(st)
+	}
+	call := func(method, target, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, target, strings.NewReader(body))
+		r.Host = "127.0.0.1:18080"
+		r.Header.Set("X-Auth-Token", "test-token")
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+		return w
+	}
+	w := call("GET", "/api/rules", "")
+	if !strings.Contains(w.Body.String(), `"password_error":"keychain operation failed: user denied"`) || strings.Count(w.Body.String(), "password_error") != 1 {
+		t.Fatal(w.Body)
+	}
+	if w := call("GET", "/api/status", ""); !strings.Contains(w.Body.String(), "user denied") {
+		t.Fatal(w.Body)
+	}
+	var status string
+	m.SecretsChanged = func(s string) { status = s }
+	// Saving without touching rule b must not overwrite its stored password.
+	if w := call("PUT", "/api/rules", `[{"id":"a","name":"A","host_prefix":"a.","username":"u","enabled":true},{"id":"b","name":"B","host_prefix":"b.","username":"u","enabled":true}]`); w.Code != 200 {
+		t.Fatal(w.Code, w.Body)
+	}
+	if p, _ := files.Get("b"); p != "secret-b" {
+		t.Fatalf("unreadable password overwritten: %q", p)
+	}
+	for _, id := range store.setCalls {
+		if id == "b" {
+			t.Fatal("Set called for unreadable rule")
+		}
+	}
+	if status == "" {
+		t.Fatal("status cleared while b still unreadable")
+	}
+	// Entering a new password resolves the error.
+	if w := call("PUT", "/api/rules", `[{"id":"a","name":"A","host_prefix":"a.","username":"u","enabled":true},{"id":"b","name":"B","host_prefix":"b.","username":"u","password":"new-b","enabled":true}]`); w.Code != 200 {
+		t.Fatal(w.Code, w.Body)
+	}
+	if p, _ := files.Get("b"); p != "new-b" || status != "" || m.SecretStatus() != "" {
+		t.Fatalf("p=%q status=%q", p, status)
+	}
+}
+
+func TestRollbackErrorsAreReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	files := secret.NewFile(dir)
+	_ = files.Set("a", "secret-a")
+	c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", Rules: []config.Rule{{ID: "a", HostPrefix: "a.", Username: "u", Enabled: true}}}
+	store := &flakyStore{Store: files, setErr: map[string]error{"z": errors.New("user canceled")}, rollbackErr: errors.New("rollback boom")}
+	m, e := New(c, path, store, "test-token")
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := httptest.NewRequest("PUT", "/api/rules", strings.NewReader(`[{"id":"a","host_prefix":"a.","username":"u","password":"new-a","enabled":true},{"id":"z","host_prefix":"z.","username":"u","password":"p","enabled":true}]`))
+	r.Host = "127.0.0.1:18080"
+	r.Header.Set("X-Auth-Token", "test-token")
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "user canceled") || !strings.Contains(w.Body.String(), "rollback failed") || !strings.Contains(w.Body.String(), "rollback boom") {
+		t.Fatal(w.Code, w.Body)
+	}
+}
+
+func TestLaunchAtLoginRollbackError(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the config file should be makes Save fail.
+	path := filepath.Join(dir, "config.json")
+	if e := os.Mkdir(path, 0700); e != nil {
+		t.Fatal(e)
+	}
+	c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac"}
+	m, e := New(c, path, secret.NewFile(dir), "test-token")
+	if e != nil {
+		t.Fatal(e)
+	}
+	calls := 0
+	m.SetLaunchAtLogin = func(bool) error {
+		calls++
+		if calls > 1 {
+			return errors.New("launchd boom")
+		}
+		return nil
+	}
+	err := m.UpdateLaunchAtLogin(false)
+	if err == nil || !strings.Contains(err.Error(), "rollback") || !strings.Contains(err.Error(), "launchd boom") {
+		t.Fatal(err)
 	}
 }

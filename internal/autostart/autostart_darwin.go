@@ -4,6 +4,11 @@ import (
 	"os"
 )
 
+// Agent accepts explicit paths for tests; New resolves the running executable's symlinks.
+type Agent struct {
+	Home, Executable string
+}
+
 func (a *Agent) Enable() error { return a.write() }
 
 // Removing only the file avoids killing our own launchd-managed process.

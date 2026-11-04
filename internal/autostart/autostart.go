@@ -42,11 +42,8 @@ func Plist(path string) ([]byte, error) {
 `, Label, escaped.String())), nil
 }
 
-// Agent accepts explicit paths for tests; New resolves the running executable's symlinks.
-type Agent struct {
-	Home, Executable string
-	enabled          bool
-}
+// Agent (defined per platform) accepts explicit paths for tests; New resolves
+// the running executable's symlinks.
 
 func New() (*Agent, error) {
 	home, err := os.UserHomeDir()

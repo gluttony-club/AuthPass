@@ -17,7 +17,7 @@ import (
 )
 
 func TestPAC(t *testing.T) {
-	c := &config.Config{TrustedDomains: []string{"foo.test", "example.com"}, Listen: "127.0.0.1:18080", Rules: []config.Rule{{HostPrefix: "dev.", Username: "user", Enabled: true}, {HostPrefix: "staging.", Enabled: true}}}
+	c := &config.Config{TrustedDomains: []string{"foo.test", "example.com"}, Listen: "127.0.0.1:18080", Rules: []config.Rule{{HostPrefix: "dev.", Username: "user", Password: "secret", Enabled: true}, {HostPrefix: "staging.", Enabled: true}}}
 	p := PAC(c)
 	for _, v := range []string{`shExpMatch(host, "dev.*")`, `PROXY 127.0.0.1:18080`, `return "DIRECT"`, `host == "example.com" || dnsDomainIs(host, ".example.com")`, `host.toLowerCase()`} {
 		if !strings.Contains(p, v) {
@@ -127,8 +127,8 @@ func TestPACUnconfiguredAndOrdering(t *testing.T) {
 	c := &config.Config{TrustedDomains: []string{"foo.test", "example.com"}, Listen: "127.0.0.1:18080", Rules: []config.Rule{
 		{HostPrefix: "staging.", Enabled: true},
 		{HostPrefix: "test.", Enabled: true},
-		{HostPrefix: "test.feature.", Username: "user", Enabled: true},
-		{HostPrefix: "disabled.", Username: "user", Enabled: false},
+		{HostPrefix: "test.feature.", Username: "user", Password: "secret", Enabled: true},
+		{HostPrefix: "disabled.", Username: "user", Password: "secret", Enabled: false},
 	}}
 	p := PAC(c)
 	if strings.Contains(p, "staging.") || strings.Contains(p, "disabled.") {
@@ -151,7 +151,7 @@ func TestAtomicReload(t *testing.T) {
 		defer close(done)
 		for i := 0; i < 100; i++ {
 			next := *c
-			next.Rules = []config.Rule{{HostPrefix: "feature.", Username: "user", Enabled: true}}
+			next.Rules = []config.Rule{{HostPrefix: "feature.", Username: "user", Password: "secret", Enabled: true}}
 			p.Update(&next)
 		}
 	}()
@@ -176,7 +176,7 @@ func TestAtomicReload(t *testing.T) {
 }
 
 func TestEmptyDomainsPAC(t *testing.T) {
-	c := &config.Config{Listen: "127.0.0.1:18080", Rules: []config.Rule{{HostPrefix: "dev.", Username: "user", Enabled: true}}}
+	c := &config.Config{Listen: "127.0.0.1:18080", Rules: []config.Rule{{HostPrefix: "dev.", Username: "user", Password: "secret", Enabled: true}}}
 	if p := PAC(c); strings.Contains(p, "PROXY") {
 		t.Fatal(p)
 	}
@@ -250,5 +250,22 @@ func TestNonASCIIHostsGetNoCredentials(t *testing.T) {
 		if w.Body.String() != want {
 			t.Errorf("GET http://%s: %d %q, want %q", host, w.Code, w.Body.String(), want)
 		}
+	}
+}
+
+func TestPACSkipsRulesWithoutPasswordAndNonASCII(t *testing.T) {
+	c := &config.Config{TrustedDomains: []string{"example.com"}, Listen: "127.0.0.1:18080", Rules: []config.Rule{
+		{HostPrefix: "nopass.", Username: "user", Enabled: true},
+		{HostPrefix: "nopass.sub.", Username: "user", Password: "secret", Enabled: true},
+		{HostPrefix: "dev.", Username: "user", Password: "secret", Enabled: true},
+	}}
+	p := PAC(c)
+	if strings.Contains(p, `(shExpMatch(host, "nopass.*")`) || !strings.Contains(p, `!shExpMatch(host, "nopass.*")`) {
+		t.Fatal("rule without password routed or not excluded", p)
+	}
+	ascii := strings.Index(p, `/[^\x00-\x7f]/.test(host)) return "DIRECT"`)
+	lower := strings.Index(p, "toLowerCase")
+	if ascii < 0 || lower < 0 || ascii > lower {
+		t.Fatal("non-ASCII hosts must return DIRECT before lowercasing", p)
 	}
 }

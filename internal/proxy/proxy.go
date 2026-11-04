@@ -275,16 +275,18 @@ type bufferedConn struct {
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 func PAC(c *config.Config) string {
 	var b strings.Builder
-	b.WriteString("function FindProxyForURL(url, host) {\n  host = host.toLowerCase().replace(/\\.$/, \"\");\n")
+	// Never route non-ASCII hosts: toLowerCase applies Unicode case folding,
+	// and Go never injects credentials for such hosts anyway.
+	b.WriteString("function FindProxyForURL(url, host) {\n  if (/[^\\x00-\\x7f]/.test(host)) return \"DIRECT\";\n  host = host.toLowerCase().replace(/\\.$/, \"\");\n")
 	quote := func(v string) string { x, _ := json.Marshal(v); return string(x) }
 	for i, r := range c.Rules {
-		if !r.Enabled || r.Username == "" {
+		if !r.Enabled || !r.Configured() {
 			continue
 		}
 		condition := "shExpMatch(host, " + quote(r.HostPrefix+"*") + ")"
 		// An earlier unconfigured rule still wins overlapping prefixes.
 		for _, previous := range c.Rules[:i] {
-			if previous.Enabled && previous.Username == "" && (strings.HasPrefix(r.HostPrefix, previous.HostPrefix) || strings.HasPrefix(previous.HostPrefix, r.HostPrefix)) {
+			if previous.Enabled && !previous.Configured() && (strings.HasPrefix(r.HostPrefix, previous.HostPrefix) || strings.HasPrefix(previous.HostPrefix, r.HostPrefix)) {
 				condition += " && !shExpMatch(host, " + quote(previous.HostPrefix+"*") + ")"
 			}
 		}

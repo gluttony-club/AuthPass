@@ -218,7 +218,7 @@ func (c *Config) Target(host string) *Rule {
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		if r.Enabled && Match(r.HostPrefix, host) {
-			if r.Username == "" {
+			if !r.Configured() {
 				return nil
 			}
 			return r
@@ -226,5 +226,11 @@ func (c *Config) Target(host string) *Rule {
 	}
 	return nil
 }
+
+// Configured reports whether the rule has both a username and a password.
+// A rule without a password (never set, cleared, or unreadable from the
+// keychain) never injects credentials and is not routed by the PAC; like a rule
+// with an empty username it means "do not intercept" and stops matching.
+func (r *Rule) Configured() bool { return r.Username != "" && r.Password != "" }
 
 func (c *Config) LaunchAtLogin() bool { return c.LaunchAtLoginValue == nil || *c.LaunchAtLoginValue }

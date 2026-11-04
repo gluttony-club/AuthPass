@@ -18,7 +18,7 @@ func TestMatch(t *testing.T) {
 	}
 }
 func TestRules(t *testing.T) {
-	c := &Config{TrustedDomains: []string{"example.com"}, Rules: []Rule{{HostPrefix: "test.", Username: "first", Enabled: true}, {HostPrefix: "test.example.", Username: "second", Enabled: true}}}
+	c := &Config{TrustedDomains: []string{"example.com"}, Rules: []Rule{{HostPrefix: "test.", Username: "first", Password: "p1", Enabled: true}, {HostPrefix: "test.example.", Username: "second", Password: "p2", Enabled: true}}}
 	if c.Target("test.example.com").Username != "first" {
 		t.Fatal("order")
 	}
@@ -84,7 +84,7 @@ func TestLaunchAtLogin(t *testing.T) {
 }
 
 func TestTrustedDomains(t *testing.T) {
-	c := &Config{TrustedDomains: []string{"example.com", "example.net"}, Rules: []Rule{{HostPrefix: " DEV. ", Username: "user", Enabled: true}}}
+	c := &Config{TrustedDomains: []string{"example.com", "example.net"}, Rules: []Rule{{HostPrefix: " DEV. ", Username: "user", Password: "secret", Enabled: true}}}
 	if err := Validate(c.Rules); err != nil || c.Rules[0].HostPrefix != "dev." {
 		t.Fatal(c, err)
 	}
@@ -168,5 +168,22 @@ func TestNormalizeDomainsRejectsIPs(t *testing.T) {
 		if _, err := NormalizeDomains([]string{domain}); err != nil {
 			t.Errorf("rejected %s: %v", domain, err)
 		}
+	}
+}
+
+func TestRulesWithoutPasswordNeverInject(t *testing.T) {
+	c := &Config{TrustedDomains: []string{"example.com"}, Rules: []Rule{
+		{HostPrefix: "dev.", Username: "user", Enabled: true}, // no password: never set, cleared, or unreadable
+		{HostPrefix: "dev.example.", Username: "other", Password: "secret", Enabled: true},
+	}}
+	if c.Target("dev.example.com") != nil {
+		t.Fatal("rule without password injected")
+	}
+	c.Rules[0].Password = "secret"
+	if r := c.Target("dev.example.com"); r == nil || r.Username != "user" {
+		t.Fatal("configured rule not matched", r)
+	}
+	if (&Rule{Username: "u"}).Configured() || (&Rule{Password: "p"}).Configured() || !(&Rule{Username: "u", Password: "p"}).Configured() {
+		t.Fatal("Configured")
 	}
 }

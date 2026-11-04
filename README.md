@@ -6,7 +6,7 @@
 
 ## 功能
 
-- 按主机名前缀匹配规则，例如 `dev.` 匹配 `dev.example.com`
+- 在可信主域名及其子域名内按主机名前缀匹配规则，例如 `dev.` 匹配 `dev.example.com`，默认仅为 HTTPS 注入凭据
 - 每条规则有自己的用户名和密码，可以随时添加、编辑、删除、调整顺序、启用或停用
 - 不内置任何账号密码，全部由用户自己填写；密码存在 macOS 钥匙串里
 - 开机自动启动（默认开启，可关闭）
@@ -29,21 +29,25 @@
   xattr -dr com.apple.quarantine "/Applications/AuthPass.app"
   ```
 
-第一次启用时会生成本机根证书并加入钥匙串信任，系统会要求输入密码或指纹，这是正常的。
+首次启动 AuthPass 时会生成本机根证书；第一次启用时将它加入钥匙串信任，系统会要求输入密码或使用 Touch ID。
 
 ## 使用
 
 1. 点击菜单栏的 AuthPass 图标，选择「设置…」。
-2. 点「添加」，填写名称、主机前缀（如 `dev.`、`staging.`）、用户名和密码。
-3. 点「保存」，规则立即生效，刷新网页即可。
+2. 先在「可信主域名（一行一个）」文本框填写你控制或信任的主域名（如 `example.com`），点「保存可信主域名」。列表为空时所有规则都不生效，设置页会显示警告。
+3. 点「添加」，填写名称、主机前缀（如 `dev.`、`staging.`）、用户名和密码。默认只用于 HTTPS；确需用于明文 HTTP 时，勾选该规则的「允许 HTTP」。
+4. 点「保存」，规则立即更新，刷新网页即可；浏览器可能需要重新建立连接。
 
 ![AuthPass 设置页](docs/images/settings.png)
 
 规则说明：
 
-- 匹配忽略大小写和端口，按列表顺序取第一条启用且匹配的规则。
-- 前缀只能包含 `a-z 0-9 . -`，建议以 `.` 结尾。它只匹配开头，不是通配符：`dev.` 能匹配 `dev.example.com`，不能匹配 `mydev.example.com`。
-- 用户名为空的规则不会生效。
+- 主机必须同时以规则前缀开头，并且是可信主域名本身或其子域名；匹配忽略大小写和端口，按列表顺序取第一条启用且匹配的规则。
+- 域名按点分隔的边界匹配：信任 `example.com` 时，`dev.example.com` 在范围内；`dev.evil.com`、`dev.example.com.evil.com`、`devexample.com` 都不在范围内。只按前缀匹配会让任意网页通过嵌入 `https://dev.evil.com/x.png` 等资源，诱使浏览器经代理把你的凭据发送给攻击者。
+- 可信主域名（`trusted_domains`）只允许小写字母、数字、点和连字符，必须含点，不能用通配符、连续点或以点开头、结尾；输入会自动转为小写并去除首尾空白。
+- 前缀会自动转为小写并去除首尾空白，只能包含 `a-z 0-9 . -`，建议以 `.` 结尾。它只匹配开头，不是通配符：`dev.` 能匹配 `dev.example.com`，不能匹配 `mydev.example.com`。
+- 已启用但用户名为空的规则表示「不拦截」，并停止继续匹配；后续前缀重叠的规则会跳过这些主机。
+- 默认不会为明文 `http://` 请求添加 `Authorization`；只有该规则开启「允许 HTTP」（`allow_http: true`）才会注入。HTTP 会明文传输密码，请谨慎开启。
 - 编辑时密码留空表示保持原密码，点「清除密码」才会删除。
 
 菜单里还可以启用/停用、打开配置目录、安装/信任根证书、切换开机自动启动、退出。停用或退出时会恢复原来的系统代理设置。
@@ -56,15 +60,30 @@
 {
   "listen": "127.0.0.1:18080",
   "launch_at_login": true,
+  "trusted_domains": ["example.com"],
   "rules": [
-    {"id": "dev", "name": "开发环境", "host_prefix": "dev.", "username": "dev-user", "enabled": true},
-    {"id": "staging", "name": "预发环境", "host_prefix": "staging.", "username": "staging-user", "enabled": true},
-    {"id": "feature", "name": "特性环境", "host_prefix": "feature.", "username": "feature-user", "enabled": false}
+    {"id": "dev", "name": "开发环境", "host_prefix": "dev.", "username": "dev-user", "allow_http": false, "enabled": true},
+    {"id": "staging", "name": "预发环境", "host_prefix": "staging.", "username": "staging-user", "allow_http": false, "enabled": true},
+    {"id": "feature", "name": "特性环境", "host_prefix": "feature.", "username": "feature-user", "allow_http": false, "enabled": false}
   ]
 }
 ```
 
-按这份配置，`dev.example.com` 会用 dev-user 的账号登录，`staging.example.com` 会用 staging-user 的账号登录，特性环境这条已停用，不会生效。
+按这份配置，`https://dev.example.com` 使用 dev-user，`https://staging.example.com` 使用 staging-user（密码需在设置页保存）；特性环境规则已停用。只有 `example.com` 及其子域名在可信范围内，`dev.example.net` 不匹配；三条规则都不向明文 HTTP 注入凭据。
+
+### 高级配置（仅限开发/测试）
+
+以下选项只能手动编辑 `config.json`，仅用于开发和测试，修改后重启 AuthPass：
+
+- `upstream_ca_file`：额外信任的上游 TLS CA 证书 PEM 文件路径，例如自签名测试环境的 CA。
+- `insecure_skip_verify_upstream`：设为 `true` 会跳过上游 TLS 证书验证，有被中间人攻击的危险。
+- `host_overrides`：主机名到 IP 的映射，用于测试，例如 `{"dev.example.com": "127.0.0.1"}`。
+
+### 从 1.0.0 升级
+
+原有规则和钥匙串密码会保留，但升级到 1.1.0 后，必须先填写「可信主域名」并保存，规则才会生效；明文 HTTP 站点还需逐条开启「允许 HTTP」。
+
+1.0.0 的密码由 `security` 工具写入钥匙串，macOS 可能会首次询问是否允许 AuthPass 访问已有密码项，请选择「始终允许」。
 
 ### Firefox
 
@@ -74,16 +93,22 @@ Firefox 默认不信任系统证书。在 `about:config` 中把 `security.enterp
 
 AuthPass 在本机 `127.0.0.1:18080` 运行一个代理，并设置系统自动代理（PAC），只把匹配规则的域名交给它：
 
-- HTTP 请求：直接加上 `Authorization` 头。
+- HTTP 请求：仅在匹配规则开启 `allow_http` 时添加 `Authorization`；否则原样转发，不注入凭据。
 - HTTPS 请求：用本机生成的根证书在本地解密、加头后再转发到目标站点。
 - 其他域名：PAC 直接返回 DIRECT，不经过代理。
 
 ## 安全说明
 
 - 安装包里没有任何凭据；密码只保存在本机钥匙串中。
-- 根证书和私钥每台机器单独生成，保存在 `~/Library/Application Support/AuthPass/`，权限 0600，请勿分享。
-- 只有匹配规则的域名会被解密，请只为你信任的环境添加规则。
+- 根证书和私钥每台机器单独生成，只有同时匹配可信域名和规则前缀的主机会被解密。
 - 代理只监听本机回环地址，设置页使用每次启动随机生成的 token 保护。
+
+## 风险说明
+
+- 本机根 CA 能为**任意域名**签发证书。私钥保存在 `~/Library/Application Support/AuthPass/ca.key`，权限为 `0600`；切勿分享或备份到不可信的位置。卸载时须同时删除私钥和钥匙串中的受信任证书。
+- 启用 AuthPass 会在启用期间替换当前系统自动代理（PAC）设置，例如 Clash、Surge 或公司 PAC；停用或退出时恢复原设置，强制退出后会在下次启动时恢复。
+- 只添加你控制或信任的可信主域名，避免把凭据发送给不可信的站点。
+- 漏洞报告方式见 [SECURITY.md](SECURITY.md)，请通过私密渠道报告。
 
 ## 已知限制
 
@@ -100,7 +125,7 @@ AuthPass 在本机 `127.0.0.1:18080` 运行一个代理，并设置系统自动�
 
 ## 从源码构建
 
-需要 Go 1.22+ 和 Xcode Command Line Tools：
+需要 Go 1.24+ 和 Xcode Command Line Tools：
 
 ```sh
 xcode-select --install

@@ -3,8 +3,8 @@
 package secret
 
 import (
-	"github.com/gluttony-club/AuthPass/internal/config"
 	"encoding/json"
+	"github.com/gluttony-club/AuthPass/internal/config"
 	"os"
 	"path/filepath"
 	"sync"

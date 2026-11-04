@@ -3,6 +3,11 @@
 package main
 
 import (
+	"context"
+	_ "embed"
+	"errors"
+	"fmt"
+	"fyne.io/systray"
 	"github.com/gluttony-club/AuthPass/internal/ca"
 	"github.com/gluttony-club/AuthPass/internal/config"
 	"github.com/gluttony-club/AuthPass/internal/instance"
@@ -11,11 +16,6 @@ import (
 	"github.com/gluttony-club/AuthPass/internal/settings"
 	"github.com/gluttony-club/AuthPass/internal/sysproxy"
 	"github.com/gluttony-club/AuthPass/internal/trust"
-	"context"
-	_ "embed"
-	"errors"
-	"fmt"
-	"fyne.io/systray"
 	"log"
 	"net/http"
 	"os"

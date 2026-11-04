@@ -3,16 +3,16 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
 	"github.com/gluttony-club/AuthPass/internal/ca"
 	"github.com/gluttony-club/AuthPass/internal/config"
 	"github.com/gluttony-club/AuthPass/internal/instance"
 	"github.com/gluttony-club/AuthPass/internal/proxy"
 	"github.com/gluttony-club/AuthPass/internal/secret"
 	"github.com/gluttony-club/AuthPass/internal/settings"
-	"context"
-	"errors"
-	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"

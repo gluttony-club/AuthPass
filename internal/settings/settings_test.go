@@ -1,9 +1,9 @@
 package settings
 
 import (
+	"fmt"
 	"github.com/gluttony-club/AuthPass/internal/config"
 	"github.com/gluttony-club/AuthPass/internal/secret"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,9 +50,9 @@ func TestAPI(t *testing.T) {
 			t.Fatal(w.Code, w.Body)
 		}
 	}
-	put(`[{"id":"dev","name":"测试","host_prefix":"dev.","username":"user","password":"private-secret","enabled":true}]`)
+	put(`[{"id":"dev","name":"测试","host_prefix":"dev.","username":"user","password":"private-secret","enabled":true,"allow_http":true}]`)
 	w := call("GET", "", "test-token", "127.0.0.1:18080", "")
-	if strings.Contains(w.Body.String(), "private-secret") || !strings.Contains(w.Body.String(), `"has_password":true`) {
+	if strings.Contains(w.Body.String(), "private-secret") || !strings.Contains(w.Body.String(), `"has_password":true`) || !strings.Contains(w.Body.String(), `"allow_http":true`) {
 		t.Fatal(w.Body)
 	}
 	b, _ := os.ReadFile(path)
@@ -140,6 +140,66 @@ func TestPreferences(t *testing.T) {
 		t.Fatal(w)
 	}
 	if w := call("GET", "", "token", ""); !strings.Contains(w.Body.String(), `"launch_at_login":false`) || !strings.Contains(w.Body.String(), "应用程序") {
+		t.Fatal(w)
+	}
+}
+
+func TestDomains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	c, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(c, path, secret.New(dir), "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var published *config.Config
+	changed := 0
+	m.Publish = func(c *config.Config) { published = c }
+	m.Changed = func() error { changed++; return nil }
+	call := func(method, body, token, host, origin string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "/api/domains", strings.NewReader(body))
+		r.Host = host
+		r.Header.Set("X-Auth-Token", token)
+		r.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+		return w
+	}
+	for _, method := range []string{"GET", "PUT"} {
+		for _, v := range []struct {
+			token, host, origin string
+			code                int
+		}{{"", "localhost:18080", "", 401}, {"token", "evil.test:18080", "", 403}, {"token", "localhost:18080", "http://evil.test", 403}} {
+			if w := call(method, `{"trusted_domains":["example.com"]}`, v.token, v.host, v.origin); w.Code != v.code {
+				t.Fatal(w)
+			}
+		}
+	}
+	if w := call("GET", "", "token", "localhost:18080", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"trusted_domains":[]`) {
+		t.Fatal(w)
+	}
+	for _, body := range []string{`{}`, `{"trusted_domains":null}`, `{"trusted_domains":["*.example.com"]}`, `{"trusted_domains":["localhost"]}`, `{"trusted_domains":[]} {}`} {
+		if w := call("PUT", body, "token", "localhost:18080", ""); w.Code != 400 {
+			t.Fatal(w)
+		}
+	}
+	if w := call("PUT", `{"trusted_domains":[" EXAMPLE.COM ","example.com","example.net"]}`, "token", "localhost:18080", ""); w.Code != 200 {
+		t.Fatal(w)
+	}
+	if published == nil || strings.Join(published.TrustedDomains, ",") != "example.com,example.net" || changed != 1 {
+		t.Fatal(published, changed)
+	}
+	loaded, err := config.Load(path)
+	if err != nil || strings.Join(loaded.TrustedDomains, ",") != "example.com,example.net" {
+		t.Fatal(loaded, err)
+	}
+	if w := call("GET", "", "token", "localhost:18080", ""); !strings.Contains(w.Body.String(), `"trusted_domains":["example.com","example.net"]`) {
+		t.Fatal(w)
+	}
+	if w := call("PUT", `{"trusted_domains":[]}`, "token", "localhost:18080", ""); w.Code != 200 || len(m.c.TrustedDomains) != 0 {
 		t.Fatal(w)
 	}
 }

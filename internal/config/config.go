@@ -22,6 +22,7 @@ type Rule struct {
 	HostPrefix string `json:"host_prefix"`
 	Username   string `json:"username"`
 	Password   string `json:"-"`
+	AllowHTTP  bool   `json:"allow_http"`
 	Enabled    bool   `json:"enabled"`
 }
 type Config struct {
@@ -29,6 +30,7 @@ type Config struct {
 	Listen                     string            `json:"listen"`
 	PACPath                    string            `json:"pac_path"`
 	AutoEnable                 bool              `json:"auto_enable"`
+	TrustedDomains             []string          `json:"trusted_domains"`
 	Rules                      []Rule            `json:"rules"`
 	InsecureSkipVerifyUpstream bool              `json:"insecure_skip_verify_upstream"`
 	UpstreamCAFile             string            `json:"upstream_ca_file"`
@@ -64,6 +66,9 @@ func Load(path string) (*Config, error) {
 	if !strings.HasPrefix(c.PACPath, "/") || c.PACPath == "/settings" || c.PACPath == "/status" || c.PACPath == "/__basicauth_helper_ping" || strings.HasPrefix(c.PACPath, "/api/") {
 		return nil, fmt.Errorf("invalid pac_path")
 	}
+	if c.TrustedDomains, e = NormalizeDomains(c.TrustedDomains); e != nil {
+		return nil, e
+	}
 	if e = Validate(c.Rules); e != nil {
 		return nil, e
 	}
@@ -89,6 +94,7 @@ func Validate(rules []Rule) error {
 			return fmt.Errorf("invalid or duplicate rule id")
 		}
 		ids[r.ID] = true
+		r.HostPrefix = strings.ToLower(strings.TrimSpace(r.HostPrefix))
 		if !prefixRE.MatchString(r.HostPrefix) {
 			return fmt.Errorf("host_prefix must contain only [a-z0-9.-] and be non-empty")
 		}
@@ -127,7 +133,39 @@ func Host(s string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.Trim(s, "[]"), "."))
 }
 func Match(prefix, host string) bool { return prefix != "" && strings.HasPrefix(Host(host), prefix) }
+func NormalizeDomains(domains []string) ([]string, error) {
+	normalized := make([]string, 0, len(domains))
+	seen := map[string]bool{}
+	for _, domain := range domains {
+		d := strings.ToLower(strings.TrimSpace(domain))
+		if d == "" {
+			continue
+		}
+		if !prefixRE.MatchString(d) || !strings.Contains(d, ".") || strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".") || strings.Contains(d, "..") {
+			return nil, fmt.Errorf("invalid trusted domain %q: use a domain such as example.com, without wildcards or leading/trailing dots", domain)
+		}
+		if !seen[d] {
+			normalized = append(normalized, d)
+			seen[d] = true
+		}
+	}
+	return normalized, nil
+}
+
+func (c *Config) Trusted(host string) bool {
+	host = Host(host)
+	for _, d := range c.TrustedDomains {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Config) Target(host string) *Rule {
+	if !c.Trusted(host) {
+		return nil
+	}
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		if r.Enabled && Match(r.HostPrefix, host) {

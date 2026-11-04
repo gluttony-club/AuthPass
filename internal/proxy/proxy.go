@@ -2,15 +2,15 @@
 package proxy
 
 import (
-	"github.com/gluttony-club/AuthPass/internal/ca"
-	"github.com/gluttony-club/AuthPass/internal/config"
-	"github.com/gluttony-club/AuthPass/internal/instance"
 	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/gluttony-club/AuthPass/internal/ca"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/instance"
 	"io"
 	"net"
 	"net/http"
@@ -100,7 +100,7 @@ func (s *Server) forward(r *http.Request, scheme, authority string) (*http.Respo
 	q.URL.Host = authority
 	q.Host = authority
 	strip(q.Header)
-	if t := s.current.Load().Target(authority); t != nil {
+	if t := s.current.Load().Target(authority); t != nil && (scheme == "https" || t.AllowHTTP) {
 		q.SetBasicAuth(t.Username, t.Password)
 	}
 	resp, e := s.transport.RoundTrip(q)
@@ -282,7 +282,10 @@ func PAC(c *config.Config) string {
 				condition += " && !shExpMatch(host, " + quote(previous.HostPrefix+"*") + ")"
 			}
 		}
-		fmt.Fprintf(&b, "  if (%s) return %s;\n", condition, quote("PROXY "+c.Listen))
+		for _, d := range c.TrustedDomains {
+			domainCondition := "(host == " + quote(d) + " || dnsDomainIs(host, " + quote("."+d) + "))"
+			fmt.Fprintf(&b, "  if (%s && %s) return %s;\n", condition, domainCondition, quote("PROXY "+c.Listen))
+		}
 	}
 	b.WriteString("  return \"DIRECT\";\n}\n")
 	return b.String()

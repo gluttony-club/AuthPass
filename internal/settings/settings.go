@@ -1,12 +1,12 @@
 package settings
 
 import (
-	"github.com/gluttony-club/AuthPass/internal/config"
-	"github.com/gluttony-club/AuthPass/internal/secret"
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/secret"
 	"io"
 	"net"
 	"net/http"
@@ -144,6 +144,52 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err := m.updateLaunchAtLogin(*input.Launch); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
+			}
+			w.Write([]byte(`{"saved":true}`))
+		default:
+			w.Header().Set("Allow", "GET, PUT")
+			http.Error(w, "method not allowed", 405)
+		}
+		return
+	}
+	if r.URL.Path == "/api/domains" {
+		switch r.Method {
+		case "GET":
+			domains := m.c.TrustedDomains
+			if domains == nil {
+				domains = []string{}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"trusted_domains": domains})
+		case "PUT":
+			var input struct {
+				Domains *[]string `json:"trusted_domains"`
+			}
+			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&input); err != nil || input.Domains == nil || dec.Decode(new(any)) != io.EOF {
+				http.Error(w, "invalid trusted_domains", 400)
+				return
+			}
+			domains, err := config.NormalizeDomains(*input.Domains)
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			next := *m.c
+			next.TrustedDomains = domains
+			if err := config.Save(m.path, &next); err != nil {
+				http.Error(w, "config save failed", 500)
+				return
+			}
+			m.c = &next
+			if m.Publish != nil {
+				m.Publish(&next)
+			}
+			if m.Changed != nil {
+				if err := m.Changed(); err != nil {
+					http.Error(w, "saved; PAC refresh failed", 500)
+					return
+				}
 			}
 			w.Write([]byte(`{"saved":true}`))
 		default:

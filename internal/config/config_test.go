@@ -11,22 +11,22 @@ func TestMatch(t *testing.T) {
 	for _, v := range []struct {
 		p, h string
 		want bool
-	}{{"dev.", "DEV.foo.com:443", true}, {"dev.", "dev.a.b.cn", true}, {"dev.", "evildev.foo.com", false}, {"", "foo", false}, {"dev.", "dev", false}} {
+	}{{"dev.", "DEV.example.com:443", true}, {"dev.", "dev.a.example.net", true}, {"dev.", "evildev.example.com", false}, {"", "foo", false}, {"dev.", "dev", false}} {
 		if Match(v.p, v.h) != v.want {
 			t.Fatalf("%+v", v)
 		}
 	}
 }
 func TestRules(t *testing.T) {
-	c := &Config{Rules: []Rule{{HostPrefix: "test.", Username: "first", Enabled: true}, {HostPrefix: "test.a", Username: "second", Enabled: true}}}
-	if c.Target("test.a.com").Username != "first" {
+	c := &Config{TrustedDomains: []string{"example.com"}, Rules: []Rule{{HostPrefix: "test.", Username: "first", Enabled: true}, {HostPrefix: "test.example.", Username: "second", Enabled: true}}}
+	if c.Target("test.example.com").Username != "first" {
 		t.Fatal("order")
 	}
 	c.Rules[0].Username = ""
-	if c.Target("test.a.com") != nil {
+	if c.Target("test.example.com") != nil {
 		t.Fatal("unconfigured first match")
 	}
-	for _, p := range []string{"", "*.foo", "UPPER.", "a/b"} {
+	for _, p := range []string{"", "*.example.com", "a/b"} {
 		if Validate([]Rule{{HostPrefix: p}}) == nil {
 			t.Fatal(p)
 		}
@@ -78,6 +78,56 @@ func TestLaunchAtLogin(t *testing.T) {
 		}
 		c, err = Load(path)
 		if err != nil || c.LaunchAtLogin() != want || c.LaunchAtLoginValue == nil {
+			t.Fatal(c, err)
+		}
+	}
+}
+
+func TestTrustedDomains(t *testing.T) {
+	c := &Config{TrustedDomains: []string{"example.com", "example.net"}, Rules: []Rule{{HostPrefix: " DEV. ", Username: "user", Enabled: true}}}
+	if err := Validate(c.Rules); err != nil || c.Rules[0].HostPrefix != "dev." {
+		t.Fatal(c, err)
+	}
+	for _, host := range []string{"dev.example.com", "DEV.Example.COM.", "dev.example.com:443", "dev.a.example.net", "[dev.example.com]:443"} {
+		if c.Target(host) == nil {
+			t.Errorf("did not match %s", host)
+		}
+	}
+	for _, host := range []string{"dev.evil.com", "dev.example.com.evil.com", "devexample.com", "dev.notexample.com"} {
+		if c.Target(host) != nil {
+			t.Errorf("matched %s", host)
+		}
+	}
+	if !c.Trusted("example.com") {
+		t.Fatal("root domain not trusted")
+	}
+	c.TrustedDomains = nil
+	if c.Target("dev.example.com") != nil {
+		t.Fatal("empty domains matched")
+	}
+}
+
+func TestNormalizeDomains(t *testing.T) {
+	domains, err := NormalizeDomains([]string{" Example.COM ", "", "example.com", " EXAMPLE.net "})
+	if err != nil || strings.Join(domains, ",") != "example.com,example.net" {
+		t.Fatal(domains, err)
+	}
+	for _, domain := range []string{"*.example.com", ".example.com", "example.com.", "localhost", "exa_mple.com", "example..com"} {
+		if _, err := NormalizeDomains([]string{domain}); err == nil {
+			t.Errorf("accepted %s", domain)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, value := range []string{`[" EXAMPLE.COM ","example.com"]`, `["*.example.com"]`} {
+		if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:18080","pac_path":"/proxy.pac","trusted_domains":`+value+`}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(path)
+		if strings.Contains(value, "*") {
+			if err == nil {
+				t.Fatal("invalid domains loaded")
+			}
+		} else if err != nil || len(c.TrustedDomains) != 1 || c.TrustedDomains[0] != "example.com" {
 			t.Fatal(c, err)
 		}
 	}

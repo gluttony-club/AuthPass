@@ -20,7 +20,7 @@ GO
 pp=$(go run "$tmp/port.go")
 mkdir -p "$tmp/data"
 cat > "$tmp/data/config.json" <<JSON
-{"listen":"127.0.0.1:$pp","pac_path":"/proxy.pac","upstream_ca_file":"$tmp/upstream.crt","host_overrides":{"dev.foo.test":"127.0.0.1","feature.bar.test":"127.0.0.1","other.test":"127.0.0.1"},"rules":[{"id":"dev","name":"测试环境","host_prefix":"dev.","enabled":true},{"id":"staging","name":"预发环境","host_prefix":"staging.","enabled":true}]}
+{"trusted_domains":["foo.test","bar.test"],"listen":"127.0.0.1:$pp","pac_path":"/proxy.pac","upstream_ca_file":"$tmp/upstream.crt","host_overrides":{"dev.foo.test":"127.0.0.1","feature.bar.test":"127.0.0.1","other.test":"127.0.0.1"},"rules":[{"id":"dev","name":"测试环境","host_prefix":"dev.","enabled":true},{"id":"staging","name":"预发环境","host_prefix":"staging.","enabled":true}]}
 JSON
 "$tmp/helper" -datadir "$tmp/data" >"$tmp/proxy.log" 2>&1 & proxy_pid=$!
 base="http://127.0.0.1:$pp"
@@ -55,14 +55,20 @@ pass 'settings API saves per-rule credentials'
 curl -fsS "$base/proxy.pac" > "$tmp/pac"
 rg -q 'shExpMatch\(host, "dev\.\*"\).*PROXY' "$tmp/pac"
 rg -q 'shExpMatch\(host, "feature\.\*"\).*PROXY' "$tmp/pac"
-pass 'PAC hot reload includes both configured prefixes'
+rg -q 'dnsDomainIs' "$tmp/pac"
+curl -fsS -H "X-Auth-Token: $token" "$base/api/domains" > "$tmp/domains"
+rg -q '"trusted_domains":\["foo.test","bar.test"\]' "$tmp/domains"
+pass 'PAC hot reload includes trusted domains and both configured prefixes'
 for entry in 'dev.foo.test test-user' 'feature.bar.test feature-user'; do
  read -r host user <<< "$entry"
- check 200 "$user" "http://$host:$hp/"
- pass "HTTP $host receives $user credentials"
+ check 401 '' "http://$host:$hp/"
+ pass "HTTP $host receives no credentials by default"
  check 200 "$user" --cacert "$tmp/data/ca.crt" "https://$host:$sp/"
  pass "HTTPS $host uses local CA and $user credentials"
 done
+curl -fsS -X PUT -H "X-Auth-Token: $token" -H 'Content-Type: application/json' "$base/api/rules" --data '[{"id":"dev","host_prefix":"dev.","username":"test-user","enabled":true,"allow_http":true},{"id":"feature","host_prefix":"feature.","username":"feature-user","enabled":true}]' >/dev/null
+check 200 test-user "http://dev.foo.test:$hp/"
+pass 'HTTP credentials require explicit allow_http'
 check 401 '' "http://other.test:$hp/"
 check 401 '' --cacert "$tmp/upstream.crt" "https://other.test:$sp/"
 pass 'non-target HTTP/HTTPS untouched with upstream certificate'

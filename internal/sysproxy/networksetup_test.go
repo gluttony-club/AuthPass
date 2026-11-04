@@ -10,11 +10,14 @@ import (
 )
 
 type svc struct {
-	url string
-	on  bool
+	url   string
+	on    bool
+	fresh bool // never had proxy settings: -getautoproxyurl fails
 }
 
-// fake simulates networksetup for a set of services.
+// fake simulates networksetup for a set of services, including behaviour seen
+// on a real Mac: -setautoproxyurl also turns autoproxy on, an empty URL is
+// rejected, and a service that never had proxy settings cannot be queried.
 type fake struct {
 	svcs  map[string]*svc
 	order []string
@@ -53,6 +56,9 @@ func (f *fake) run(args ...string) (string, error) {
 	}
 	switch args[0] {
 	case "-getautoproxyurl":
+		if s.fresh {
+			return "", errors.New("networksetup [-getautoproxyurl]: exit status 4: ** Error: The parameters were not valid.")
+		}
 		u, on := s.url, "No"
 		if u == "" {
 			u = "(null)"
@@ -62,9 +68,12 @@ func (f *fake) run(args ...string) (string, error) {
 		}
 		return fmt.Sprintf("URL: %s\nEnabled: %s\n", u, on), nil
 	case "-setautoproxyurl":
-		s.url = args[2]
+		if args[2] == "" {
+			return "", errors.New("** Error: The parameters were not valid.")
+		}
+		s.url, s.on, s.fresh = args[2], true, false
 	case "-setautoproxystate":
-		s.on = args[2] == "on"
+		s.on, s.fresh = args[2] == "on", false
 	}
 	return "", nil
 }
@@ -222,21 +231,39 @@ func TestEnableFailureRestoresOnlyChangedServices(t *testing.T) {
 	}
 }
 
-// A restore that fails (or is interrupted) part way must still finish on retry.
+// A restore that fails (or is interrupted) part way must still finish on
+// retry: either step failing, and a crash right after the URL was set (which
+// turned autoproxy on).
 func TestRestoreRetryAfterPartialFailure(t *testing.T) {
-	for _, step := range []string{"-setautoproxystate", "-setautoproxyurl"} {
+	for _, step := range []string{"-setautoproxystate", "-setautoproxyurl", "crash"} {
 		dir := t.TempDir()
 		f := newFake("Wi-Fi")
 		f.svcs["Wi-Fi"].url, f.svcs["Wi-Fi"].on = "http://corp.example/proxy.pac", false
 		if e := enable(dir, pac, f.run, stamp); e != nil {
 			t.Fatal(e)
 		}
-		f.fail = step
-		if e := restore(dir, f.run); e == nil {
-			t.Fatal("expected error")
-		}
-		if f.svcs["Wi-Fi"].url != pac+"?t=42" {
-			t.Fatal(step, "URL must be restored last:", *f.svcs["Wi-Fi"])
+		if step == "crash" {
+			// AuthPass dies right after setting the URL, which turned
+			// autoproxy on.
+			crash := func(args ...string) (string, error) {
+				out, e := f.run(args...)
+				if args[0] == "-setautoproxyurl" {
+					panic("crash")
+				}
+				return out, e
+			}
+			func() {
+				defer func() { recover() }()
+				restore(dir, crash)
+			}()
+			if s := f.svcs["Wi-Fi"]; !s.on {
+				t.Fatal("crash simulation did not turn autoproxy on")
+			}
+		} else {
+			f.fail = step
+			if e := restore(dir, f.run); e == nil {
+				t.Fatal("expected error")
+			}
 		}
 		f.fail = ""
 		if e := restore(dir, f.run); e != nil {
@@ -248,6 +275,94 @@ func TestRestoreRetryAfterPartialFailure(t *testing.T) {
 		if _, e := os.Stat(filepath.Join(dir, "proxy-state.json")); !os.IsNotExist(e) {
 			t.Fatal("state not removed", e)
 		}
+	}
+}
+
+// A user who sets their original URL back by hand while AuthPass runs keeps it.
+func TestRestoreKeepsOriginalURLSetByUser(t *testing.T) {
+	dir := t.TempDir()
+	f := newFake("Wi-Fi")
+	f.svcs["Wi-Fi"].url = "http://corp.example/proxy.pac"
+	if e := enable(dir, pac, f.run, stamp); e != nil {
+		t.Fatal(e)
+	}
+	f.run("-setautoproxyurl", "Wi-Fi", "http://corp.example/proxy.pac")
+	if e := restore(dir, f.run); e != nil {
+		t.Fatal(e)
+	}
+	if s := f.svcs["Wi-Fi"]; !s.on {
+		t.Fatal("user's change was overwritten")
+	}
+}
+
+// A never-configured service that AuthPass did not get to change (enable
+// failed or crashed first) must not block restore.
+func TestRestoreUntouchedFreshService(t *testing.T) {
+	dir := t.TempDir()
+	f := newFake("Wi-Fi", "Dock")
+	f.svcs["Dock"].fresh = true
+	f.fail = "-setautoproxyurl Wi-Fi"
+	if e := enable(dir, pac, f.run, stamp); e == nil {
+		t.Fatal("expected error")
+	}
+	if e := writeState(filepath.Join(dir, "proxy-state.json"), []state{{Service: "Dock"}}); e != nil {
+		t.Fatal(e)
+	}
+	f.fail = ""
+	if e := restore(dir, f.run); e != nil {
+		t.Fatal(e)
+	}
+	if !f.svcs["Dock"].fresh {
+		t.Fatal("untouched service was changed")
+	}
+	if _, e := os.Stat(filepath.Join(dir, "proxy-state.json")); !os.IsNotExist(e) {
+		t.Fatal("state not removed", e)
+	}
+}
+
+// Repeated enable/quit cycles must always end in the original state. A user
+// without a PAC keeps AuthPass's URL afterwards (networksetup cannot clear a
+// URL) but autoproxy must be off.
+func TestEnableRestoreCycles(t *testing.T) {
+	for _, v := range []struct {
+		name  string
+		start svc
+	}{
+		{"no PAC", svc{}},
+		{"never configured", svc{fresh: true}},
+		{"own PAC disabled", svc{url: "http://corp.example/proxy.pac"}},
+		{"own PAC enabled", svc{url: "http://corp.example/proxy.pac", on: true}},
+		{"left over by 1.1.3, off", svc{url: pac + "?t=1793763171929078000"}},
+		{"left over by 1.1.3, on", svc{url: pac + "?t=1793763171929078000", on: true}},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f := newFake("Wi-Fi")
+			*f.svcs["Wi-Fi"] = v.start
+			for cycle := 1; cycle <= 3; cycle++ {
+				if e := enable(dir, pac, f.run, func() int64 { return int64(1793763171929078000 + cycle) }); e != nil {
+					t.Fatal(cycle, e)
+				}
+				if s := f.svcs["Wi-Fi"]; !s.on || !strings.HasPrefix(s.url, pac+"?t=") {
+					t.Fatal(cycle, "not enabled:", *s)
+				}
+				if e := restore(dir, f.run); e != nil {
+					t.Fatal(cycle, e)
+				}
+				s := *f.svcs["Wi-Fi"]
+				want := v.start.url
+				if want == "" || authPassURL.MatchString(want) {
+					// No PAC of the user's own: off; the URL can't be cleared.
+					if s.on || (s.url != "" && !authPassURL.MatchString(s.url)) {
+						t.Fatal(cycle, "autoproxy left on or wrong URL:", s)
+					}
+					continue
+				}
+				if s.url != want || s.on != v.start.on {
+					t.Fatalf("cycle %d: got %+v, want %+v", cycle, s, v.start)
+				}
+			}
+		})
 	}
 }
 

@@ -31,3 +31,25 @@ func TestListen(t *testing.T) {
 		srv.Close()
 	}
 }
+
+func TestLock(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Lock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err := Lock(dir); !errors.Is(err, ErrAlreadyRunning) {
+		if second != nil {
+			second.Close()
+		}
+		t.Fatal("second lock acquired", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Lock(dir)
+	if err != nil {
+		t.Fatal("lock not released", err)
+	}
+	again.Close()
+}

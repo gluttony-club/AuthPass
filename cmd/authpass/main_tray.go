@@ -53,6 +53,16 @@ func ready() {
 			systray.Quit()
 			return
 		}
+		// Single-instance check first, before the config is read and before any
+		// system proxy state is touched: a second instance must exit without
+		// restoring or deleting proxy-state.json owned by the running one.
+		lock, e := instance.Lock(dir)
+		if e != nil {
+			log.Print(e)
+			systray.Quit()
+			return
+		}
+		defer lock.Close()
 		path := filepath.Join(dir, "config.json")
 		var c *config.Config
 		var a *ca.Authority
@@ -189,8 +199,13 @@ func ready() {
 				systray.Quit()
 				return
 			}
-			// Keep the menu alive so the error is visible and the user can open the
+			// We hold the instance lock, so undo any system proxy left enabled
+			// by a previous crash even though the config is broken. Keep the menu
+			// alive so the error is visible and the user can open the
 			// configuration directory, fix it, and choose 启用 to retry.
+			if re := sysproxy.Restore(dir); re != nil {
+				e = fmt.Errorf("%w; restoring the previous system proxy failed: %v", e, re)
+			}
 			report(e)
 		} else {
 			report(sysproxy.Restore(dir))

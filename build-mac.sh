@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 dmg=false
 for arg in "$@"; do case "$arg" in --dmg) dmg=true;; *) echo "Unknown argument: $arg" >&2; exit 1;; esac; done
 VERSION=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')} || true
-VERSION=${VERSION:-1.1.3}
+VERSION=${VERSION:-1.1.4}
 [[ $VERSION =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid version: $VERSION" >&2; exit 1; }
 mkdir -p dist
 bins=()

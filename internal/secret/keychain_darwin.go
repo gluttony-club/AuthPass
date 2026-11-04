@@ -36,7 +36,12 @@ func keychainQuery(id string) kc.Item {
 	return item
 }
 
-func (keychain) Set(id, password string) error {
+func (k keychain) Set(id, password string) error {
+	if password == "" {
+		// An absent item reads back as "", so clearing removes the item instead
+		// of storing an empty one (same as the security(1) fallback).
+		return k.Delete(id)
+	}
 	item := keychainQuery(id)
 	item.SetData([]byte(password))
 	item.SetLabel("AuthPass")

@@ -24,6 +24,11 @@ type Rule struct {
 	Password   string `json:"-"`
 	AllowHTTP  bool   `json:"allow_http"`
 	Enabled    bool   `json:"enabled"`
+	// PasswordReset means the stored password must not be used: a change to
+	// it could not be confirmed (for example a keychain write failed after the
+	// configuration was saved). The rule has no password, and so does not
+	// intercept, until a new password is saved successfully.
+	PasswordReset bool `json:"password_reset,omitempty"`
 }
 type Config struct {
 	LaunchAtLoginValue         *bool             `json:"launch_at_login"`

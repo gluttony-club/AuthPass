@@ -212,6 +212,17 @@ type flakyStore struct {
 	setErr      map[string]error
 	setCalls    []string
 	rollbackErr error
+	delErr      map[string]error
+	// replace makes Set for these IDs delete the item and then fail, like a
+	// keychain item owned by another build whose re-add fails.
+	replace map[string]bool
+}
+
+func (s *flakyStore) Delete(id string) error {
+	if e := s.delErr[id]; e != nil {
+		return e
+	}
+	return s.Store.Delete(id)
 }
 
 func (s *flakyStore) Get(id string) (string, error) {
@@ -224,6 +235,12 @@ func (s *flakyStore) Set(id, p string) error {
 	s.setCalls = append(s.setCalls, id)
 	if e := s.setErr[id]; e != nil {
 		return e
+	}
+	if s.replace[id] {
+		if e := s.Store.Delete(id); e != nil {
+			return e
+		}
+		return fmt.Errorf("keychain operation failed: %w", &secret.ReplaceError{Err: errors.New("add denied")})
 	}
 	if s.rollbackErr != nil && len(s.setCalls) > 1 {
 		return s.rollbackErr
@@ -429,5 +446,183 @@ func TestUnreadablePasswordDeferredWriteFails(t *testing.T) {
 	}
 	if m.c.Rules[0].Password != "" || m.c.Target("b.example.com") != nil || m.SecretStatus() == "" {
 		t.Fatal("rule must stay degraded")
+	}
+}
+
+func put(t *testing.T, m *Manager, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("PUT", "/api/rules", strings.NewReader(body))
+	r.Host = "127.0.0.1:18080"
+	r.Header.Set("X-Auth-Token", "test-token")
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+	return w
+}
+
+// TestDeferredWriteFailureIsFailSafe: when the keychain change for an
+// unreadable rule fails after the config was saved, the old password must
+// never be used again, even after a restart with a readable keychain, whether
+// the user changed the password together with the username or prefix, or
+// cleared it. Entering a new password later recovers the rule.
+func TestDeferredWriteFailureIsFailSafe(t *testing.T) {
+	for _, v := range []struct {
+		name, body, msg string
+		replace         bool
+		wantItem        string
+	}{
+		{"set with new username", `[{"id":"b","name":"B","host_prefix":"b.","username":"new-user","password":"new-b","enabled":true}]`, "left unchanged", false, "secret-b"},
+		{"set with new prefix", `[{"id":"b","name":"B","host_prefix":"c.","username":"u","password":"new-b","enabled":true}]`, "left unchanged", false, "secret-b"},
+		{"clear", `[{"id":"b","name":"B","host_prefix":"b.","username":"u","clear_password":true,"enabled":true}]`, "left unchanged", false, "secret-b"},
+		{"replace deleted old item", `[{"id":"b","name":"B","host_prefix":"b.","username":"new-user","password":"new-b","enabled":true}]`, "old keychain item was deleted", true, ""},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			files := secret.NewFile(dir)
+			_ = files.Set("b", "secret-b")
+			c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true}}}
+			store := &flakyStore{Store: files, getErr: map[string]error{"b": errors.New("denied")}, replace: map[string]bool{"b": v.replace}}
+			if !v.replace {
+				store.setErr = map[string]error{"b": errors.New("user canceled")}
+			}
+			m, _ := New(c, path, store, "test-token")
+			w := put(t, m, v.body)
+			body := w.Body.String()
+			if w.Code != 500 || !strings.Contains(body, v.msg) || !strings.Contains(body, "will not intercept") {
+				t.Fatal(w.Code, body)
+			}
+			if v.replace == strings.Contains(body, "left unchanged") {
+				t.Fatal("message must say whether the old item was kept or deleted:", body)
+			}
+			if p, _ := files.Get("b"); p != v.wantItem {
+				t.Fatalf("keychain item %q, want %q", p, v.wantItem)
+			}
+			if !m.c.Rules[0].PasswordReset || m.c.Rules[0].Password != "" || !strings.Contains(m.SecretStatus(), "需要重新输入") {
+				t.Fatalf("rule must wait for a new password: %+v %q", m.c.Rules[0], m.SecretStatus())
+			}
+			for _, h := range []string{"b.example.com", "c.example.com"} {
+				if m.c.Target(h) != nil {
+					t.Fatal("must not inject", h)
+				}
+			}
+			// Restart with the keychain readable again: the stale item is ignored.
+			saved, e := config.Load(path)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if !saved.Rules[0].PasswordReset {
+				t.Fatal("marker not persisted")
+			}
+			m, _ = New(saved, path, files, "test-token")
+			if saved.Rules[0].Password != "" || saved.Target("b.example.com") != nil || saved.Target("c.example.com") != nil {
+				t.Fatalf("stale password used after restart: %+v", saved.Rules[0])
+			}
+			// Saving other edits without a password keeps the marker and the item.
+			keep := strings.Replace(v.body, `"password":"new-b",`, "", 1)
+			keep = strings.Replace(keep, `"clear_password":true,`, "", 1)
+			keep = strings.Replace(keep, `"name":"B"`, `"name":"B2","password_reset":false`, 1)
+			if w = put(t, m, keep); w.Code != 200 {
+				t.Fatal(w.Code, w.Body)
+			}
+			if p, _ := files.Get("b"); !m.c.Rules[0].PasswordReset || p != v.wantItem {
+				t.Fatal("marker must survive edits without a new password (and ignore the client value)", m.c.Rules[0], p)
+			}
+			// Entering a password recovers the rule.
+			fresh := strings.Replace(keep, `"name":"B2"`, `"name":"B2","password":"fresh"`, 1)
+			if w = put(t, m, fresh); w.Code != 200 {
+				t.Fatal(w.Code, w.Body)
+			}
+			if p, _ := files.Get("b"); p != "fresh" || m.c.Rules[0].PasswordReset || m.SecretStatus() != "" {
+				t.Fatal("not recovered", p, m.c.Rules[0], m.SecretStatus())
+			}
+			if saved, _ = config.Load(path); saved.Rules[0].PasswordReset {
+				t.Fatal("marker not cleared on disk")
+			}
+		})
+	}
+}
+
+// TestDeferredWriteSuccessClearsMarker: the marker is cleared once the
+// keychain change succeeds, and stays (fail-safe) if that second save fails.
+func TestDeferredWriteSuccessClearsMarker(t *testing.T) {
+	for _, resaveFails := range []bool{false, true} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		files := secret.NewFile(dir)
+		_ = files.Set("b", "secret-b")
+		c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true}}}
+		m, _ := New(c, path, &flakyStore{Store: files, getErr: map[string]error{"b": errors.New("denied")}}, "test-token")
+		saves := 0
+		m.save = func(p string, c *config.Config) error {
+			saves++
+			if saves == 1 && !c.Rules[0].PasswordReset {
+				t.Fatal("first save must carry the marker")
+			}
+			if resaveFails && saves == 2 {
+				return errors.New("disk full")
+			}
+			return config.Save(p, c)
+		}
+		w := put(t, m, `[{"id":"b","name":"B","host_prefix":"b.","username":"u","password":"new-b","enabled":true}]`)
+		saved, _ := config.Load(path)
+		if p, _ := files.Get("b"); p != "new-b" || saves != 2 {
+			t.Fatal(p, saves)
+		}
+		if !resaveFails {
+			if w.Code != 200 || saved.Rules[0].PasswordReset || m.c.Target("b.example.com") == nil {
+				t.Fatal(w.Code, w.Body, saved.Rules[0])
+			}
+			continue
+		}
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "configuration could not be updated") || !saved.Rules[0].PasswordReset || m.c.Target("b.example.com") != nil {
+			t.Fatal(w.Code, w.Body, saved.Rules[0])
+		}
+	}
+}
+
+// TestRemovingMarkedRuleNeverBlocks: deleting the ignored item of a removed
+// rule happens after the save, so its failure does not block saving.
+func TestRemovingMarkedRuleNeverBlocks(t *testing.T) {
+	dir := t.TempDir()
+	files := secret.NewFile(dir)
+	_ = files.Set("b", "stale")
+	c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true, PasswordReset: true}}}
+	store := &flakyStore{Store: files, delErr: map[string]error{"b": errors.New("denied")}}
+	m, _ := New(c, filepath.Join(dir, "config.json"), store, "test-token")
+	if c.Rules[0].Password != "" {
+		t.Fatal("marked rule must not read its item")
+	}
+	w := put(t, m, `[]`)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "could not be deleted") || len(m.c.Rules) != 0 {
+		t.Fatal(w.Code, w.Body, m.c.Rules)
+	}
+}
+
+// Clearing the password of a rule with PasswordReset deletes the ignored item
+// (after the save) and clears the marker.
+func TestClearIgnoredPassword(t *testing.T) {
+	for _, delFails := range []bool{false, true} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		files := secret.NewFile(dir)
+		_ = files.Set("b", "stale")
+		c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true, PasswordReset: true}}}
+		store := &flakyStore{Store: files}
+		if delFails {
+			store.setErr = map[string]error{"b": errors.New("denied")}
+		}
+		m, _ := New(c, path, store, "test-token")
+		w := put(t, m, `[{"id":"b","name":"B","host_prefix":"b.","username":"u","clear_password":true,"enabled":true}]`)
+		saved, _ := config.Load(path)
+		p, _ := files.Get("b")
+		if !delFails {
+			if w.Code != 200 || p != "" || m.c.Rules[0].PasswordReset || saved.Rules[0].PasswordReset || m.SecretStatus() != "" {
+				t.Fatal(w.Code, w.Body, p, m.c.Rules[0])
+			}
+			continue
+		}
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "left unchanged") || p != "stale" || !saved.Rules[0].PasswordReset || m.c.Target("b.example.com") != nil {
+			t.Fatal(w.Code, w.Body, p, saved.Rules[0])
+		}
 	}
 }

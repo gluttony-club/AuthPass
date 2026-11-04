@@ -49,6 +49,11 @@ func New(c *config.Config, path string, store secret.Store, token string) (*Mana
 	}
 	m := &Manager{c: c, path: path, store: store, Token: token, secretErrors: map[string]string{}, save: config.Save}
 	for i := range c.Rules {
+		if c.Rules[i].PasswordReset {
+			// The stored item may be stale; never read or use it.
+			c.Rules[i].Password = ""
+			continue
+		}
 		p, e := store.Get(c.Rules[i].ID)
 		if e != nil {
 			// Never exit on a read failure: keep running with no password for this rule.
@@ -67,22 +72,28 @@ func (m *Manager) SecretStatus() string {
 	return m.secretStatus()
 }
 func (m *Manager) secretStatus() string {
-	if len(m.secretErrors) == 0 {
-		return ""
-	}
-	var names, details []string
+	var names, details, reset []string
 	for _, r := range m.c.Rules {
+		name := r.Name
+		if name == "" {
+			name = r.HostPrefix
+		}
 		if e, ok := m.secretErrors[r.ID]; ok {
-			name := r.Name
-			if name == "" {
-				name = r.HostPrefix
-			}
 			names = append(names, name)
 			details = append(details, e)
+		} else if r.PasswordReset {
+			reset = append(reset, name)
 		}
 	}
-	sort.Strings(details)
-	return fmt.Sprintf("无法读取 %d 条规则的密码（%s），这些规则暂按无密码处理：%s", len(names), joinUnique(names), joinUnique(details))
+	var parts []string
+	if len(names) > 0 {
+		sort.Strings(details)
+		parts = append(parts, fmt.Sprintf("无法读取 %d 条规则的密码（%s），这些规则暂不拦截：%s", len(names), joinUnique(names), joinUnique(details)))
+	}
+	if len(reset) > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条规则的密码需要重新输入（%s），这些规则暂不拦截", len(reset), joinUnique(reset)))
+	}
+	return strings.Join(parts, "；")
 }
 func joinUnique(v []string) string {
 	seen := map[string]bool{}
@@ -285,21 +296,27 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		next := *m.c
 		next.Rules = make([]config.Rule, len(rows))
-		// old holds the stored passwords we know. Unreadable ones are not in it,
-		// so a rollback never overwrites them with an empty value.
+		// old holds the stored passwords we know. Unreadable and ignored
+		// (PasswordReset) ones are not in it, so a rollback never touches them.
 		old := map[string]string{}
 		existing := map[string]bool{}
+		marked := map[string]bool{}
 		for _, r := range m.c.Rules {
 			existing[r.ID] = true
-			if _, bad := m.secretErrors[r.ID]; !bad {
+			marked[r.ID] = r.PasswordReset
+			if _, bad := m.secretErrors[r.ID]; !bad && !r.PasswordReset {
 				old[r.ID] = r.Password
 			}
 		}
 		// untouched lists unreadable rules whose password the user did not change;
 		// their stored item is left as is.
 		untouched := map[string]bool{}
+		// clearIgnored lists rules with PasswordReset whose ignored item the
+		// user asked to clear; that delete is deferred like the others.
+		clearIgnored := map[string]bool{}
 		for i, row := range rows {
 			v := row.Rule
+			v.PasswordReset = marked[v.ID] // never taken from the client
 			v.Password = old[v.ID]
 			if row.ClearPassword {
 				if row.Password != nil && *row.Password != "" {
@@ -311,6 +328,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				v.Password = *row.Password
 			} else if _, bad := m.secretErrors[v.ID]; bad {
 				untouched[v.ID] = true
+			}
+			if v.PasswordReset && v.Password == "" {
+				if row.ClearPassword {
+					clearIgnored[v.ID] = true
+				} else {
+					// Still no new password: leave the ignored item alone.
+					untouched[v.ID] = true
+				}
 			}
 			next.Rules[i] = v
 		}
@@ -348,21 +373,37 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// The original password of an unreadable rule can never be restored by a
 		// rollback, so its keychain item is only changed (set, cleared or
-		// deleted) after the configuration has been saved.
+		// deleted) after the configuration has been saved. Until that change is
+		// confirmed the rule is saved with PasswordReset, so a failed change can
+		// never leave the old password in use with the new settings (or bring
+		// back a cleared password) after a restart. Items of removed rules whose
+		// stored password is already ignored are also deleted afterwards, so a
+		// failure there does not block saving.
 		deferred := map[string]bool{}
 		for id := range m.secretErrors {
 			if existing[id] && !untouched[id] {
 				deferred[id] = true
 			}
 		}
-		for _, r := range next.Rules {
-			if untouched[r.ID] || deferred[r.ID] {
+		for id := range marked {
+			if marked[id] && (!keep[id] || clearIgnored[id]) {
+				deferred[id] = true
+			}
+		}
+		for i := range next.Rules {
+			r := &next.Rules[i]
+			if untouched[r.ID] {
+				continue
+			}
+			if deferred[r.ID] {
+				r.PasswordReset = true
 				continue
 			}
 			if e := m.store.Set(r.ID, r.Password); e != nil {
 				fail("secret save failed", e)
 				return
 			}
+			r.PasswordReset = false
 		}
 		for id := range existing {
 			if !keep[id] && !deferred[id] {
@@ -376,24 +417,44 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail("config save failed", e)
 			return
 		}
-		// The configuration is saved; now apply changes to unreadable items. On
-		// failure the original item is left as it was and the rule stays degraded.
+		// The configuration is saved; now apply the deferred changes. A rule
+		// whose change fails keeps PasswordReset and does not intercept until
+		// its password is entered again.
 		var pending []string
+		var confirmed []int
 		for i := range next.Rules {
 			r := &next.Rules[i]
 			if !deferred[r.ID] {
 				continue
 			}
 			if e := m.store.Set(r.ID, r.Password); e != nil {
-				pending = append(pending, fmt.Sprintf("rule %q: %v", r.ID, e))
 				r.Password = ""
-				untouched[r.ID] = true
+				var re *secret.ReplaceError
+				if errors.As(e, &re) {
+					pending = append(pending, fmt.Sprintf("rule %q: the old keychain item was deleted, but the new password could not be saved (%v); the rule will not intercept until its password is entered again", r.ID, e))
+				} else {
+					pending = append(pending, fmt.Sprintf("rule %q: the keychain item was left unchanged (%v) and will not be used; the rule will not intercept until its password is entered again", r.ID, e))
+				}
+				continue
 			}
+			r.PasswordReset = false
+			confirmed = append(confirmed, i)
 		}
 		for id := range deferred {
 			if !keep[id] {
 				if e := m.store.Delete(id); e != nil {
-					pending = append(pending, fmt.Sprintf("removed rule %q: %v", id, e))
+					pending = append(pending, fmt.Sprintf("removed rule %q: the keychain item could not be deleted and was left in place, unused (%v)", id, e))
+				}
+			}
+		}
+		if len(confirmed) > 0 {
+			if e := m.save(m.path, &next); e != nil {
+				// The saved configuration still ignores these items; match it.
+				for _, i := range confirmed {
+					r := &next.Rules[i]
+					r.PasswordReset = true
+					r.Password = ""
+					pending = append(pending, fmt.Sprintf("rule %q: the password was saved to the keychain, but the configuration could not be updated (%v); the rule will not intercept until its password is entered again", r.ID, e))
 				}
 			}
 		}
@@ -417,7 +478,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(pending) > 0 {
 			sort.Strings(pending)
-			http.Error(w, "rules saved, but updating keychain items that could not be read failed; those items were left unchanged: "+strings.Join(pending, "; "), http.StatusInternalServerError)
+			http.Error(w, "rules saved, but some keychain changes failed: "+strings.Join(pending, "; "), http.StatusInternalServerError)
 			return
 		}
 		w.Write([]byte(`{"saved":true}`))

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 dmg=false
 for arg in "$@"; do case "$arg" in --dmg) dmg=true;; *) echo "Unknown argument: $arg" >&2; exit 1;; esac; done
 VERSION=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')} || true
-VERSION=${VERSION:-1.1.2}
+VERSION=${VERSION:-1.1.3}
 [[ $VERSION =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid version: $VERSION" >&2; exit 1; }
 mkdir -p dist
 bins=()
@@ -27,9 +27,13 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 lipo -create "${bins[@]}" -output "$app/Contents/MacOS/authpass"
 lipo "$app/Contents/MacOS/authpass" -verify_arch arm64 x86_64 || { echo 'Error: universal binary is missing arm64 or x86_64.' >&2; exit 1; }
-# grep -c reads all input (grep -q would exit early and, with pipefail, the
-# resulting SIGPIPE in strings would hide a match). No match exits 1, hence || true.
-leaks=$(strings - "$app/Contents/MacOS/authpass" | grep -cF -e "$HOME" -e "$PWD" || true)
+# Run strings on its own so its failure fails the build (rather than reading
+# as 0 matches), then count with grep -c, which reads all input; grep -q would
+# exit early and, with pipefail, the SIGPIPE could hide a match. No match exits
+# 1, hence || true.
+text=$(strings - "$app/Contents/MacOS/authpass") && [[ -n $text ]] || { echo 'Error: strings failed; cannot check for local build paths.' >&2; exit 1; }
+leaks=$(printf '%s\n' "$text" | grep -cF -e "$HOME" -e "$PWD" || true)
+unset text
 if [[ $leaks != 0 ]]; then
   echo "Error: binary contains local build paths ($leaks matches)." >&2; exit 1
 fi

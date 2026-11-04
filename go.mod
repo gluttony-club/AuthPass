@@ -2,7 +2,10 @@ module github.com/gluttony-club/AuthPass
 
 go 1.22
 
-require fyne.io/systray v1.11.0
+require (
+	fyne.io/systray v1.11.0
+	github.com/keybase/go-keychain v0.0.1
+)
 
 require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect

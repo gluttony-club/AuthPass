@@ -4,6 +4,7 @@ package secret
 
 import (
 	"fmt"
+	"os/exec"
 
 	kc "github.com/keybase/go-keychain"
 )
@@ -30,6 +31,13 @@ func (keychain) Set(id, password string) error {
 		update := kc.NewItem()
 		update.SetData([]byte(password))
 		err = kc.UpdateItem(keychainQuery(id), update)
+		if err != nil {
+			// Item owned by another build (e.g. older version or re-signed app):
+			// remove it and add a fresh one owned by this app.
+			if forceDelete(id) == nil {
+				err = kc.AddItem(item)
+			}
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("Keychain operation failed: %w", err)
@@ -60,7 +68,26 @@ func (keychain) Delete(id string) error {
 		return nil
 	}
 	if err != nil {
+		err = forceDelete(id)
+	}
+	if err != nil {
 		return fmt.Errorf("Keychain operation failed: %w", err)
+	}
+	return nil
+}
+
+// forceDelete removes an item via the security tool, which can delete items
+// whose access control belongs to a different binary. No secret is passed.
+func forceDelete(id string) error {
+	if !securityAccountID.MatchString(id) {
+		return fmt.Errorf("invalid keychain account %q", id)
+	}
+	out, err := exec.Command("/usr/bin/security", "delete-generic-password", "-s", service, "-a", id).CombinedOutput()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 44 {
+			return nil // not found
+		}
+		return fmt.Errorf("Keychain delete failed: %v: %s", err, out)
 	}
 	return nil
 }

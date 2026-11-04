@@ -1,5 +1,3 @@
-//go:build !darwin
-
 package secret
 
 import (
@@ -15,7 +13,8 @@ type fileStore struct {
 	mu   sync.Mutex
 }
 
-func New(dir string) Store { return &fileStore{path: filepath.Join(dir, "secrets.json")} }
+// NewFile returns a plaintext JSON store (0600). Used on non-macOS and in tests.
+func NewFile(dir string) Store { return &fileStore{path: filepath.Join(dir, "secrets.json")} }
 func (s *fileStore) read() (map[string]string, error) {
 	m := map[string]string{}
 	b, e := os.ReadFile(s.path)

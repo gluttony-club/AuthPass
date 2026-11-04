@@ -20,7 +20,7 @@ func TestAPI(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m, e := New(c, path, secret.New(dir), "test-token")
+	m, e := New(c, path, secret.NewFile(dir), "test-token")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -61,13 +61,13 @@ func TestAPI(t *testing.T) {
 	}
 	for _, password := range []string{"", `,"password":null`, `,"password":""`} {
 		put(`[{"id":"dev","host_prefix":"dev.","username":"user","enabled":true` + password + `}]`)
-		s, _ := secret.New(dir).Get("dev")
+		s, _ := secret.NewFile(dir).Get("dev")
 		if s != "private-secret" {
 			t.Fatal("lost password")
 		}
 	}
 	loaded, _ := config.Load(path)
-	again, e := New(loaded, path, secret.New(dir), "")
+	again, e := New(loaded, path, secret.NewFile(dir), "")
 	if e != nil || again.c.Rules[0].Password != "private-secret" {
 		t.Fatal(e)
 	}
@@ -81,7 +81,7 @@ func TestAPI(t *testing.T) {
 	}
 	wg.Wait()
 	put(`[{"id":"dev","host_prefix":"dev.","username":"user","clear_password":true,"password":"","enabled":true}]`)
-	p, _ := secret.New(dir).Get("dev")
+	p, _ := secret.NewFile(dir).Get("dev")
 	if p != "" {
 		t.Fatal("not cleared")
 	}
@@ -95,7 +95,7 @@ func TestPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(c, path, secret.New(dir), "token")
+	m, err := New(c, path, secret.NewFile(dir), "token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := New(c, path, secret.New(dir), "token")
+	m, err := New(c, path, secret.NewFile(dir), "token")
 	if err != nil {
 		t.Fatal(err)
 	}

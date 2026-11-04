@@ -4,6 +4,9 @@ cd "$(dirname "$0")"
 [[ $(uname -s) == Darwin ]] || { echo 'Run this script on macOS with Go and Xcode CLT.' >&2; exit 1; }
 dmg=false
 for arg in "$@"; do case "$arg" in --dmg) dmg=true;; *) echo "Unknown argument: $arg" >&2; exit 1;; esac; done
+VERSION=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')} || true
+VERSION=${VERSION:-1.1.0}
+[[ $VERSION =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "Invalid version: $VERSION" >&2; exit 1; }
 mkdir -p dist
 bins=()
 for arch in arm64 amd64; do
@@ -21,7 +24,7 @@ if [[ ${#bins[@]} -eq 2 ]]; then
 else
   cp "${bins[0]}" "$app/Contents/MacOS/authpass"
 fi
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -29,7 +32,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>AuthPass</string>
 <key>CFBundleIdentifier</key><string>club.gluttony.authpass</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleShortVersionString</key><string>${VERSION}</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -46,4 +49,4 @@ if $dmg; then
   ln -s /Applications "$stage/Applications"
   hdiutil create -volname 'AuthPass' -srcfolder "$stage" -ov -format UDZO 'dist/AuthPass.dmg'
 fi
-echo "Built $app (${#bins[@]} architecture(s))"
+echo "Built $app version $VERSION (${#bins[@]} architecture(s))"

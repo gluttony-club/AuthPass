@@ -46,19 +46,17 @@ func (k keychain) Set(id, password string) error {
 	item.SetData([]byte(password))
 	item.SetLabel("AuthPass")
 	item.SetAccessible(kc.AccessibleWhenUnlocked)
-	err := kc.AddItem(item)
-	if err == kc.ErrorDuplicateItem {
-		update := kc.NewItem()
-		update.SetData([]byte(password))
-		err = kc.UpdateItem(keychainQuery(id), update)
-		if recoverable(err) {
-			// Item owned by another build (e.g. older version or re-signed app):
-			// remove it and add a fresh one owned by this app.
-			if err = forceDelete(id); err == nil {
-				err = kc.AddItem(item)
-			}
-		}
-	}
+	update := kc.NewItem()
+	update.SetData([]byte(password))
+	// An item owned by another build (older version or re-signed app) is
+	// removed and added again; see setItem for how failures are reported.
+	err := setItem(
+		func() error { return kc.AddItem(item) },
+		func() error { return kc.UpdateItem(keychainQuery(id), update) },
+		func() error { return forceDelete(id) },
+		func(e error) bool { return e == kc.ErrorDuplicateItem },
+		recoverable,
+	)
 	if err != nil {
 		return fmt.Errorf("keychain operation failed: %w", err)
 	}

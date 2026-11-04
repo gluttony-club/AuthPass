@@ -37,6 +37,8 @@
 2. 点「添加」，填写名称、主机前缀（如 `dev.`、`staging.`）、用户名和密码。
 3. 点「保存」，规则立即生效，刷新网页即可。
 
+![AuthPass 设置页](docs/images/settings.png)
+
 规则说明：
 
 - 匹配忽略大小写和端口，按列表顺序取第一条启用且匹配的规则。
@@ -45,6 +47,24 @@
 - 编辑时密码留空表示保持原密码，点「清除密码」才会删除。
 
 菜单里还可以启用/停用、打开配置目录、安装/信任根证书、切换开机自动启动、退出。停用或退出时会恢复原来的系统代理设置。
+
+### 配置文件示例
+
+规则保存在 `~/Library/Application Support/AuthPass/config.json`，一般在设置页改就行，不用手动编辑。密码不在这个文件里，只存在钥匙串中。
+
+```json
+{
+  "listen": "127.0.0.1:18080",
+  "launch_at_login": true,
+  "rules": [
+    {"id": "dev", "name": "开发环境", "host_prefix": "dev.", "username": "dev-user", "enabled": true},
+    {"id": "staging", "name": "预发环境", "host_prefix": "staging.", "username": "staging-user", "enabled": true},
+    {"id": "feature", "name": "特性环境", "host_prefix": "feature.", "username": "feature-user", "enabled": false}
+  ]
+}
+```
+
+按这份配置，`dev.example.com` 会用 dev-user 的账号登录，`staging.example.com` 会用 staging-user 的账号登录，特性环境这条已停用，不会生效。
 
 ### Firefox
 

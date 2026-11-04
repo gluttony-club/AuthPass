@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const Label = "com.example.basicauthhelper"
+const Label = "club.gluttony.authpass"
 
 type ErrUnsuitableLocation struct{ Path string }
 

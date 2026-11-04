@@ -2,9 +2,9 @@
 package proxy
 
 import (
-	"basicauth-helper/internal/ca"
-	"basicauth-helper/internal/config"
-	"basicauth-helper/internal/instance"
+	"github.com/gluttony-club/AuthPass/internal/ca"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/instance"
 	"bufio"
 	"context"
 	"crypto/tls"

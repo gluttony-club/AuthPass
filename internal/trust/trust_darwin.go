@@ -28,5 +28,5 @@ func Uninstall() error {
 	if e != nil {
 		return e
 	}
-	return exec.Command("security", "delete-certificate", "-c", "BasicAuth Helper Local CA", filepath.Join(h, "Library/Keychains/login.keychain-db")).Run()
+	return exec.Command("security", "delete-certificate", "-c", "AuthPass Local CA", filepath.Join(h, "Library/Keychains/login.keychain-db")).Run()
 }

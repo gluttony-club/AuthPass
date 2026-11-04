@@ -17,7 +17,7 @@ func main() {
 			}
 		}
 	}
-	f, e := os.Create("cmd/basicauth-helper/icon.png")
+	f, e := os.Create("cmd/authpass/icon.png")
 	if e != nil {
 		panic(e)
 	}

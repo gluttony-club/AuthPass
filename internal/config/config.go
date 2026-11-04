@@ -44,7 +44,7 @@ func RandomID() string {
 }
 func DataDir() (string, error) {
 	d, e := os.UserConfigDir()
-	return filepath.Join(d, "BasicAuthHelper"), e
+	return filepath.Join(d, "AuthPass"), e
 }
 func Load(path string) (*Config, error) {
 	b, e := os.ReadFile(path)

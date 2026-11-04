@@ -1,4 +1,4 @@
-module basicauth-helper
+module github.com/gluttony-club/AuthPass
 
 go 1.22
 

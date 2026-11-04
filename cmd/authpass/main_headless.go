@@ -3,12 +3,12 @@
 package main
 
 import (
-	"basicauth-helper/internal/ca"
-	"basicauth-helper/internal/config"
-	"basicauth-helper/internal/instance"
-	"basicauth-helper/internal/proxy"
-	"basicauth-helper/internal/secret"
-	"basicauth-helper/internal/settings"
+	"github.com/gluttony-club/AuthPass/internal/ca"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/instance"
+	"github.com/gluttony-club/AuthPass/internal/proxy"
+	"github.com/gluttony-club/AuthPass/internal/secret"
+	"github.com/gluttony-club/AuthPass/internal/settings"
 	"context"
 	"errors"
 	"flag"

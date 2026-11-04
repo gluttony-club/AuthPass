@@ -7,7 +7,7 @@ cleanup() { [[ -z "$proxy_pid" ]] || kill "$proxy_pid" 2>/dev/null || true; [[ -
 trap cleanup EXIT
 trap 'echo "FAIL: line $LINENO" >&2' ERR
 pass() { echo "PASS: $*"; }
-go build -o "$tmp/helper" ./cmd/basicauth-helper
+go build -o "$tmp/helper" ./cmd/authpass
 go build -o "$tmp/upstream" ./test/upstream
 "$tmp/upstream" -dir "$tmp" >"$tmp/upstream.log" 2>&1 & upstream_pid=$!
 for _ in {1..100}; do [[ ! -f "$tmp/ports" ]] || break; sleep .1; done

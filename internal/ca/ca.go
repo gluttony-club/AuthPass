@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const Name = "BasicAuth Helper Local CA"
+const Name = "AuthPass Local CA"
 
 type Authority struct {
 	CertPath string

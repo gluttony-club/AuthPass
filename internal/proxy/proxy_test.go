@@ -1,8 +1,8 @@
 package proxy
 
 import (
-	"basicauth-helper/internal/ca"
-	"basicauth-helper/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/ca"
+	"github.com/gluttony-club/AuthPass/internal/config"
 	"crypto/tls"
 	"crypto/x509"
 	"io"

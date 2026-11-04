@@ -3,14 +3,14 @@
 package main
 
 import (
-	"basicauth-helper/internal/ca"
-	"basicauth-helper/internal/config"
-	"basicauth-helper/internal/instance"
-	"basicauth-helper/internal/proxy"
-	"basicauth-helper/internal/secret"
-	"basicauth-helper/internal/settings"
-	"basicauth-helper/internal/sysproxy"
-	"basicauth-helper/internal/trust"
+	"github.com/gluttony-club/AuthPass/internal/ca"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/instance"
+	"github.com/gluttony-club/AuthPass/internal/proxy"
+	"github.com/gluttony-club/AuthPass/internal/secret"
+	"github.com/gluttony-club/AuthPass/internal/settings"
+	"github.com/gluttony-club/AuthPass/internal/sysproxy"
+	"github.com/gluttony-club/AuthPass/internal/trust"
 	"context"
 	_ "embed"
 	"errors"
@@ -32,7 +32,7 @@ var icon []byte
 func main() { systray.Run(ready, func() {}) }
 func ready() {
 	systray.SetTemplateIcon(icon, icon)
-	systray.SetTooltip("BasicAuth Helper")
+	systray.SetTooltip("AuthPass")
 	status := systray.AddMenuItem("已停用", "")
 	status.Disable()
 	toggle := systray.AddMenuItem("启用", "")

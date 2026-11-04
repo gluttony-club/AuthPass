@@ -3,7 +3,7 @@
 package secret
 
 import (
-	"basicauth-helper/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/config"
 	"encoding/json"
 	"os"
 	"path/filepath"

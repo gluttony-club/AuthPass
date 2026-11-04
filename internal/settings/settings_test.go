@@ -1,8 +1,8 @@
 package settings
 
 import (
-	"basicauth-helper/internal/config"
-	"basicauth-helper/internal/secret"
+	"github.com/gluttony-club/AuthPass/internal/config"
+	"github.com/gluttony-club/AuthPass/internal/secret"
 	"fmt"
 	"net/http"
 	"net/http/httptest"

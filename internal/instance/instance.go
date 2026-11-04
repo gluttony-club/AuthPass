@@ -11,7 +11,7 @@ import (
 )
 
 const PingPath = "/__basicauth_helper_ping"
-const Identity = "com.example.basicauthhelper/v1"
+const Identity = "club.gluttony.authpass/v1"
 
 var ErrAlreadyRunning = errors.New("already running")
 

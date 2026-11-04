@@ -1,8 +1,8 @@
 package main
 
 import (
-	"basicauth-helper/internal/autostart"
-	"basicauth-helper/internal/settings"
+	"github.com/gluttony-club/AuthPass/internal/autostart"
+	"github.com/gluttony-club/AuthPass/internal/settings"
 )
 
 // Register platform operations outside the HTTP settings manager.

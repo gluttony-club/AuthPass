@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const service = "com.example.basicauthhelper"
+const service = "club.gluttony.authpass"
 
 type keychain struct{}
 

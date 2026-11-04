@@ -19,11 +19,13 @@ func New(dir string) Store { return keychain{} }
 const errSecInvalidOwnerEdit kc.Error = -25244
 
 // recoverable reports whether err means the item belongs to another build and
-// may be replaced. Any other error, including the user cancelling or denying
-// the keychain prompt, must leave the existing item untouched.
+// may be replaced. Only errSecInvalidOwnerEdit qualifies. Every other error,
+// including errSecAuthFailed (-25293, which a denied keychain prompt may
+// return) and errSecUserCanceled (-128), is returned and the existing item is
+// never deleted.
 func recoverable(err error) bool {
 	var code kc.Error
-	return errors.As(err, &code) && (code == errSecInvalidOwnerEdit || code == kc.ErrorAuthFailed)
+	return errors.As(err, &code) && code == errSecInvalidOwnerEdit
 }
 
 func keychainQuery(id string) kc.Item {

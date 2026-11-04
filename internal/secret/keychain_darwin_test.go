@@ -17,10 +17,13 @@ func TestRecoverable(t *testing.T) {
 	}{
 		{errSecInvalidOwnerEdit, true},
 		{kc.Error(-25244), true},
-		{kc.ErrorAuthFailed, true},
-		{fmt.Errorf("wrapped: %w", kc.ErrorAuthFailed), true},
+		{fmt.Errorf("wrapped: %w", errSecInvalidOwnerEdit), true},
+		{kc.ErrorAuthFailed, false}, // errSecAuthFailed (-25293), e.g. Deny
+		{kc.Error(-25293), false},
+		{fmt.Errorf("wrapped: %w", kc.ErrorAuthFailed), false},
 		{nil, false},
 		{kc.Error(-128), false}, // errSecUserCanceled
+		{fmt.Errorf("wrapped: %w", kc.Error(-128)), false},
 		{kc.ErrorInteractionNotAllowed, false},
 		{kc.ErrorNoAccessForItem, false},
 		{kc.ErrorItemNotFound, false},

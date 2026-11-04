@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -38,13 +39,15 @@ type Manager struct {
 	// password, and their stored item is left untouched until the user sets or
 	// clears the password.
 	secretErrors map[string]string
+	// save persists the configuration; tests replace it to simulate failures.
+	save func(string, *config.Config) error
 }
 
 func New(c *config.Config, path string, store secret.Store, token string) (*Manager, error) {
 	if token == "" {
 		token = config.RandomID()
 	}
-	m := &Manager{c: c, path: path, store: store, Token: token, secretErrors: map[string]string{}}
+	m := &Manager{c: c, path: path, store: store, Token: token, secretErrors: map[string]string{}, save: config.Save}
 	for i := range c.Rules {
 		p, e := store.Get(c.Rules[i].ID)
 		if e != nil {
@@ -113,7 +116,7 @@ func (m *Manager) updateLaunchAtLogin(v bool) error {
 	}
 	next := *m.c
 	next.LaunchAtLoginValue = &v
-	if err := config.Save(m.path, &next); err != nil {
+	if err := m.save(m.path, &next); err != nil {
 		if m.SetLaunchAtLogin != nil {
 			if rerr := m.SetLaunchAtLogin(old); rerr != nil {
 				err = fmt.Errorf("%w; rollback of launch at login failed: %v", err, rerr)
@@ -231,7 +234,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			next := *m.c
 			next.TrustedDomains = domains
-			if err := config.Save(m.path, &next); err != nil {
+			if err := m.save(m.path, &next); err != nil {
 				http.Error(w, "config save failed", http.StatusInternalServerError)
 				return
 			}
@@ -339,8 +342,21 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			http.Error(w, msg, http.StatusInternalServerError)
 		}
+		keep := map[string]bool{}
 		for _, r := range next.Rules {
-			if untouched[r.ID] {
+			keep[r.ID] = true
+		}
+		// The original password of an unreadable rule can never be restored by a
+		// rollback, so its keychain item is only changed (set, cleared or
+		// deleted) after the configuration has been saved.
+		deferred := map[string]bool{}
+		for id := range m.secretErrors {
+			if existing[id] && !untouched[id] {
+				deferred[id] = true
+			}
+		}
+		for _, r := range next.Rules {
+			if untouched[r.ID] || deferred[r.ID] {
 				continue
 			}
 			if e := m.store.Set(r.ID, r.Password); e != nil {
@@ -348,25 +364,42 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		keep := map[string]bool{}
-		for _, r := range next.Rules {
-			keep[r.ID] = true
-		}
 		for id := range existing {
-			if !keep[id] {
+			if !keep[id] && !deferred[id] {
 				if e := m.store.Delete(id); e != nil {
 					fail("secret delete failed", e)
 					return
 				}
 			}
 		}
-		if e := config.Save(m.path, &next); e != nil {
+		if e := m.save(m.path, &next); e != nil {
 			fail("config save failed", e)
 			return
 		}
+		// The configuration is saved; now apply changes to unreadable items. On
+		// failure the original item is left as it was and the rule stays degraded.
+		var pending []string
+		for i := range next.Rules {
+			r := &next.Rules[i]
+			if !deferred[r.ID] {
+				continue
+			}
+			if e := m.store.Set(r.ID, r.Password); e != nil {
+				pending = append(pending, fmt.Sprintf("rule %q: %v", r.ID, e))
+				r.Password = ""
+				untouched[r.ID] = true
+			}
+		}
+		for id := range deferred {
+			if !keep[id] {
+				if e := m.store.Delete(id); e != nil {
+					pending = append(pending, fmt.Sprintf("removed rule %q: %v", id, e))
+				}
+			}
+		}
 		m.c = &next
 		for id := range m.secretErrors {
-			if !untouched[id] {
+			if !untouched[id] || !keep[id] {
 				delete(m.secretErrors, id)
 			}
 		}
@@ -381,6 +414,11 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "saved; PAC refresh failed", http.StatusInternalServerError)
 				return
 			}
+		}
+		if len(pending) > 0 {
+			sort.Strings(pending)
+			http.Error(w, "rules saved, but updating keychain items that could not be read failed; those items were left unchanged: "+strings.Join(pending, "; "), http.StatusInternalServerError)
+			return
 		}
 		w.Write([]byte(`{"saved":true}`))
 	default:

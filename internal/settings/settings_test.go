@@ -343,3 +343,91 @@ func TestLaunchAtLoginRollbackError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestUnreadablePasswordSurvivesFailedSave checks that the keychain item of a
+// rule whose password could not be read is never changed before the config is
+// saved, because a rollback could not restore it.
+func TestUnreadablePasswordSurvivesFailedSave(t *testing.T) {
+	const a = `{"id":"a","name":"A","host_prefix":"a.","username":"u","enabled":true}`
+	for _, v := range []struct {
+		name, body string
+	}{
+		{"delete", `[` + a + `]`},
+		{"set", `[` + a + `,{"id":"b","name":"B","host_prefix":"b.","username":"u","password":"new-b","enabled":true}]`},
+		{"clear", `[` + a + `,{"id":"b","name":"B","host_prefix":"b.","username":"u","clear_password":true,"enabled":true}]`},
+	} {
+		t.Run(v.name, func(t *testing.T) {
+			dir := t.TempDir()
+			files := secret.NewFile(dir)
+			_ = files.Set("a", "secret-a")
+			_ = files.Set("b", "secret-b")
+			c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{
+				{ID: "a", Name: "A", HostPrefix: "a.", Username: "u", Enabled: true},
+				{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true},
+			}}
+			store := &flakyStore{Store: files, getErr: map[string]error{"b": errors.New("denied")}}
+			m, _ := New(c, filepath.Join(dir, "config.json"), store, "test-token")
+			if c.Target("b.example.com") != nil {
+				t.Fatal("degraded rule must not inject credentials")
+			}
+			m.save = func(string, *config.Config) error { return errors.New("disk full") }
+			r := httptest.NewRequest("PUT", "/api/rules", strings.NewReader(v.body))
+			r.Host = "127.0.0.1:18080"
+			r.Header.Set("X-Auth-Token", "test-token")
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+			if w.Code != 500 || !strings.Contains(w.Body.String(), "disk full") || strings.Contains(w.Body.String(), "rollback failed") {
+				t.Fatal(w.Code, w.Body)
+			}
+			if p, err := files.Get("b"); err != nil || p != "secret-b" {
+				t.Fatalf("unreadable password changed before save: %q %v", p, err)
+			}
+			if p, _ := files.Get("a"); p != "secret-a" {
+				t.Fatalf("readable password not rolled back: %q", p)
+			}
+			if len(m.c.Rules) != 2 || m.SecretStatus() == "" {
+				t.Fatal("state changed after failed save")
+			}
+			// Once saving works, the change is applied.
+			m.save = config.Save
+			w = httptest.NewRecorder()
+			r = httptest.NewRequest("PUT", "/api/rules", strings.NewReader(v.body))
+			r.Host = "127.0.0.1:18080"
+			r.Header.Set("X-Auth-Token", "test-token")
+			m.ServeHTTP(w, r)
+			if w.Code != 200 {
+				t.Fatal(w.Code, w.Body)
+			}
+			p, _ := files.Get("b")
+			want := map[string]string{"delete": "", "set": "new-b", "clear": ""}[v.name]
+			if p != want || m.SecretStatus() != "" {
+				t.Fatalf("after save: %q status %q", p, m.SecretStatus())
+			}
+		})
+	}
+}
+
+// TestUnreadablePasswordDeferredWriteFails covers a keychain failure after the
+// config was saved: the original item stays and the error says so.
+func TestUnreadablePasswordDeferredWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	files := secret.NewFile(dir)
+	_ = files.Set("b", "secret-b")
+	c := &config.Config{Listen: "127.0.0.1:18080", PACPath: "/proxy.pac", TrustedDomains: []string{"example.com"}, Rules: []config.Rule{{ID: "b", Name: "B", HostPrefix: "b.", Username: "u", Enabled: true}}}
+	store := &flakyStore{Store: files, getErr: map[string]error{"b": errors.New("denied")}, setErr: map[string]error{"b": errors.New("user canceled")}}
+	m, _ := New(c, filepath.Join(dir, "config.json"), store, "test-token")
+	r := httptest.NewRequest("PUT", "/api/rules", strings.NewReader(`[{"id":"b","name":"B","host_prefix":"b.","username":"u","password":"new-b","enabled":true}]`))
+	r.Host = "127.0.0.1:18080"
+	r.Header.Set("X-Auth-Token", "test-token")
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "left unchanged") || !strings.Contains(w.Body.String(), "user canceled") {
+		t.Fatal(w.Code, w.Body)
+	}
+	if p, _ := files.Get("b"); p != "secret-b" {
+		t.Fatal("original item changed", p)
+	}
+	if m.c.Rules[0].Password != "" || m.c.Target("b.example.com") != nil || m.SecretStatus() == "" {
+		t.Fatal("rule must stay degraded")
+	}
+}

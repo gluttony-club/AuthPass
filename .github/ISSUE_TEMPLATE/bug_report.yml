@@ -1,0 +1,52 @@
+name: 问题反馈
+description: 报告 AuthPass 的缺陷或异常行为
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **请勿粘贴真实的域名、用户名、密码、证书或私钥。** 截图和日志里请把域名替换为 `example.com` 这类示例，把凭据打码。
+        安全漏洞请不要在这里提交，改用 [私密报告](https://github.com/gluttony-club/AuthPass/security/advisories/new)。
+  - type: input
+    id: authpass-version
+    attributes:
+      label: AuthPass 版本
+      placeholder: 例如 1.1.4
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本与芯片
+      placeholder: 例如 macOS 15.1，Apple 芯片 / Intel
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器及版本
+      placeholder: 例如 Chrome 130、Safari 18、Firefox 132
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 规则、可信主域名请用示例域名描述（如 `dev.` + `example.com`）。
+      placeholder: |
+        1. 可信主域名填 example.com，添加前缀为 dev. 的规则
+        2. 访问 https://dev.example.com
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他信息
+      description: 是否使用 Clash、Surge、公司 PAC 或 VPN 等代理工具；菜单或设置页显示的错误提示（请先去掉真实域名）。

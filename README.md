@@ -20,6 +20,13 @@
 
 系统要求 macOS 13 及以上，Apple 芯片和 Intel 都支持。
 
+建议安装前校验下载的文件：从同一 Release 页下载 `SHA256SUMS`，与 `AuthPass.dmg` 放在同一目录，在终端执行：
+
+```sh
+shasum -a 256 AuthPass.dmg   # 输出的值应与 SHA256SUMS 中的一致
+shasum -a 256 -c SHA256SUMS  # 或直接校验，显示 AuthPass.dmg: OK 即通过
+```
+
 应用没有做苹果开发者签名，首次打开会被系统拦截。处理方法任选一种：
 
 - 打开「系统设置 → 隐私与安全性」，拉到底部，点 AuthPass 旁的「仍要打开」。

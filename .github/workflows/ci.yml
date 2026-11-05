@@ -11,8 +11,10 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -25,7 +27,7 @@ jobs:
       - run: go test -race ./...
       - name: Staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2 # 2026.2.2
           staticcheck ./...
           GOOS=darwin CGO_ENABLED=0 staticcheck ./...
       - name: Install ripgrep
@@ -33,16 +35,17 @@ jobs:
       - run: ./test/e2e.sh
       - name: Check vulnerabilities
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
 
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -56,7 +59,7 @@ jobs:
         run: CGO_ENABLED=0 go test ./...
       - name: Staticcheck (cgo)
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2 # 2026.2.2
           "$(go env GOPATH)/bin/staticcheck" ./...
       - run: ./build-mac.sh
       - name: Check universal binary
@@ -65,7 +68,7 @@ jobs:
           lipo dist/AuthPass.app/Contents/MacOS/authpass -verify_arch arm64 x86_64
       - name: Zip app bundle
         run: ditto -c -k --keepParent dist/AuthPass.app dist/AuthPass.app.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: AuthPass-macos
           path: dist/AuthPass.app.zip
